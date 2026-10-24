@@ -1,0 +1,31 @@
+# Standalone homelab deployment; do not combine with docker-compose.yml.
+# Pull and run the GitHub Container Registry package; no source checkout needed.
+#   docker compose -f docker-compose.homelab.yml up -d
+services:
+  web:
+    image: ghcr.io/prinako/support-fins:${SUPPORT_FINS_VERSION:-latest}
+    pull_policy: always
+    container_name: support-fins
+    ports:
+      - "${SUPPORT_FINS_BIND_IP:-0.0.0.0}:${SUPPORT_FINS_PORT:-8731}:80"
+    restart: unless-stopped
+    environment:
+      TZ: America/Belem
+    networks:
+      - proxy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  proxy:
+    external: true
+    name: ${SUPPORT_FINS_NETWORK:-traefik-net}

@@ -13,8 +13,8 @@ FROM nginx:stable-alpine
 
 LABEL org.opencontainers.image.title="Support Fins" \
       org.opencontainers.image.description="Browser-based breakaway support-fin generator for 3D prints" \
-      org.opencontainers.image.source="https://github.com/gittrahan/support-fins" \
-      org.opencontainers.image.license="MIT"
+      org.opencontainers.image.source="https://github.com/prinako/support-fins" \
+      org.opencontainers.image.licenses="MIT"
 
 # Site config: port 80, canonical-root redirects (mirroring web/_redirects), and
 # a cache policy that matches the dev server's no-store on the app's own

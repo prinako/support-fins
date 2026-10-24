@@ -1,13 +1,10 @@
 # Standalone homelab deployment; do not combine with docker-compose.yml.
-# Run from the repository root:
-#   docker compose -f docker-compose.homelab.yml up -d --build
+# Pull and run the GitHub Container Registry package; no source checkout needed.
+#   docker compose -f docker-compose.homelab.yml up -d
 services:
   web:
-    image: support-fins:homelab
-    pull_policy: build
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/prinako/support-fins:${SUPPORT_FINS_VERSION:-latest}
+    pull_policy: always
     container_name: support-fins
     ports:
       - "${SUPPORT_FINS_BIND_IP:-0.0.0.0}:${SUPPORT_FINS_PORT:-8731}:80"

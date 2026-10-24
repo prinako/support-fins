@@ -2,11 +2,15 @@
 
 Support Fins serves static files with Nginx on container port 80. Geometry processing
 runs in the browser. No database, GPU, upload directory, or persistent volume is needed.
-The existing Dockerfile and nginx.conf can be used unchanged.
+GitHub Actions publishes this fork to ghcr.io/prinako/support-fins for amd64 and arm64.
+Pushes to main publish latest, main, and a sha tag. Version tags such as v1.2.3 publish
+1.2.3 and 1.2 tags; they do not replace latest. Pull requests build without publishing.
+The image is linked to this repository through its OCI source label.
 
-The original Compose file references ghcr.io/gittrahan/support-fins. The fork's current
-container workflow builds but does not publish images. This deployment builds the checked-out
-source into the local image support-fins:homelab instead.
+After the first successful publication, check the package visibility in GitHub Packages.
+New packages may be private; for anonymous homelab pulls set the package to Public.
+For a private package, authenticate the Docker host with docker login ghcr.io using a
+classic PAT with read:packages (or configure equivalent registry credentials in Arcane).
 
 ## Start on the Docker host
 
@@ -17,7 +21,7 @@ git clone https://github.com/prinako/support-fins.git
 cd support-fins
 docker network inspect traefik-net
 docker compose -f docker-compose.homelab.yml config
-docker compose -f docker-compose.homelab.yml up -d --build
+docker compose -f docker-compose.homelab.yml up -d
 docker compose -f docker-compose.homelab.yml ps
 curl -f http://127.0.0.1:8731/
 ```
@@ -31,6 +35,7 @@ Open http://YOUR_SERVER_IP:8731/ from the LAN. The published port binds all host
 by default. Optional values in a .env file beside the Compose file:
 
 ```dotenv
+SUPPORT_FINS_VERSION=latest
 SUPPORT_FINS_NETWORK=traefik-net
 SUPPORT_FINS_PORT=8731
 SUPPORT_FINS_BIND_IP=0.0.0.0
@@ -73,17 +78,18 @@ Use either this direct tunnel origin or a route through Traefik to match your se
 
 ## Arcane
 
-Use a Git-backed project checkout of this repository and select
-docker-compose.homelab.yml if your Arcane installation supports choosing the Compose file.
-The build context must include Dockerfile, nginx.conf, LICENSE, and web/.
-Pasting only the YAML into an empty project is insufficient for a local build.
-Otherwise run the commands above on the Docker host.
+Paste docker-compose.homelab.yml into an Arcane Compose project. It pulls the published
+image directly, so no Git checkout or local build context is needed. Ensure the external
+network exists and configure registry credentials if the package is private.
 
 ## Update
 
+Recreate the service to pull the current selected tag. Set SUPPORT_FINS_VERSION to an
+existing version tag to pin a release.
+
 ```bash
 git pull --ff-only
-docker compose -f docker-compose.homelab.yml up -d --build
+docker compose -f docker-compose.homelab.yml up -d
 docker compose -f docker-compose.homelab.yml ps
 ```
 

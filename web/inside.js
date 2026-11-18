@@ -25,6 +25,10 @@
 import { gridDims } from './gridsize.js';
 
 const EPS = 1e-9;
+const EDGE_EPS = 1e-9;                 // barycentric: this close to 0 is on an edge
+// mm, y and z. Off the float32 grid, and in different directions: an edge can run along
+// one nudge, keeping that ray on it.
+const RAY_NUDGES = [[3.1415926535e-5, 2.7182818284e-5], [-1.7320508075e-5, 4.1421356237e-5], [2.2360679774e-5, -5.7721566490e-5]];
 // solidClearance switches to the coarse grid past this many fine cells a box
 const COARSE_CELLS = 64;
 
@@ -258,8 +262,10 @@ const dist2 = (p, q) => {
  * triangle. Returns { d, cosUp, x, y, z }: the distance, the print-space
  * vertical share of the approach (0.7 cone, same as the checker), and the
  * closest point on the SOLID, so the caller can find the station that owns it.
+ * `tightBounds` adds conservative triangle projection bounds before the exact
+ * query. It only prunes pairs farther than rMax; hits and tie order stay intact.
  */
-export function solidClearance(topo, rot, offset, verts, rMax = 0.45) {
+export function solidClearance(topo, rot, offset, verts, rMax = 0.45, tightBounds = false) {
   const { pos } = topo;
   const grid = buildGrid(topo);
   const clampA = (v) => Math.min(grid.NY - 1, Math.max(0, v));
@@ -326,6 +332,24 @@ export function solidClearance(topo, rot, offset, verts, rMax = 0.45) {
   for (let t = 0; t < mv.length; t += 3) {
     gen++;
     const A = [mv[t], mv[t + 1], mv[t + 2]];
+    // Optional tighter broad phase for long isolated-strut walls: their boxes
+    // in mesh space can cover much of a tilted part. Projection onto ANY axis
+    // bounds distance, so separating by more than rMax cannot hide a hit.
+    // These four axes describe the triangle's plane and its three edge sides.
+    const axes = tightBounds ? [] : null;
+    const triSize = tightBounds ? Math.max(...A.flat().map(Math.abs)) : 0;
+    if (tightBounds) {
+      const sub = (a, b) => a.map((v, k) => v - b[k]);
+      const cross = (a, b) => [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+      const ab = sub(A[1], A[0]), ac = sub(A[2], A[0]), normal = cross(ab, ac);
+      for (const n of [normal, cross(normal, ab), cross(normal, sub(A[2], A[1])), cross(normal, ac)]) {
+        const reach = rMax * Math.hypot(...n);
+        if (!(reach > 0) || !Number.isFinite(reach)) continue;
+        const p = [0, n.reduce((s,v,k)=>s+v*ab[k],0), n.reduce((s,v,k)=>s+v*ac[k],0)];
+        axes.push({n, lo:Math.min(...p)-reach, hi:Math.max(...p)+reach,
+          errorScale:32*Number.EPSILON*n.reduce((s,v)=>s+Math.abs(v),0)});
+      }
+    }
     let xLo = Infinity, xHi = -Infinity;
     let yLo = Infinity, yHi = -Infinity, zLo = Infinity, zHi = -Infinity;
     for (const q of A) {
@@ -375,6 +399,23 @@ export function solidClearance(topo, rot, offset, verts, rMax = 0.45) {
           if (bz1 < zLo - rMax) continue;
 
           const B = triVerts(pos, f);
+          if (axes?.length) {
+            const size = Math.max(triSize, Math.abs(B[0][0]), Math.abs(B[0][1]), Math.abs(B[0][2]),
+              Math.abs(B[1][0]), Math.abs(B[1][1]), Math.abs(B[1][2]),
+              Math.abs(B[2][0]), Math.abs(B[2][1]), Math.abs(B[2][2]));
+            let separated = false;
+            for (const {n,lo,hi,errorScale} of axes) {
+              let low = Infinity, high = -Infinity;
+              for (const p of B) {
+                const d = n[0]*(p[0]-A[0][0])+n[1]*(p[1]-A[0][1])+n[2]*(p[2]-A[0][2]);
+                low = Math.min(low,d); high = Math.max(high,d);
+              }
+              // Outward rounding guard for translated coordinates and dot products.
+              const error = size*errorScale;
+              if (low > hi+error || high < lo-error) { separated = true; break; }
+            }
+            if (separated) continue;
+          }
 
           // INTERSECTION FIRST. Every distance primitive below is only valid
           // for triangles that do not cross: an edge piercing the other
@@ -523,7 +564,6 @@ function triClosestP(T, p) {
  * the test -- which is what lets the grid be orientation-independent.
  */
 export function insidePart(topo, rot, offset, qx, qy, qz) {
-  const { pos } = topo;
   const grid = buildGrid(topo);
 
   // inverse of an orthonormal rotation is its transpose
@@ -532,6 +572,20 @@ export function insidePart(topo, rot, offset, qx, qy, qz) {
   const oy = rot[3] * x + rot[4] * y + rot[5] * z;
   const oz = rot[6] * x + rot[7] * y + rot[8] * z;
 
+  // A ray through a shared edge or vertex counts every face meeting there, so parity
+  // reads noise. A part centred on its axes puts rays exactly on those (#450: a false
+  // "buried" under a ball's pole). Cast again a hair off. Ordinary queries never do.
+  let n = crossingsAt(topo.pos, grid, ox, oy, oz);
+  for (let i = 0; n < 0 && i < RAY_NUDGES.length; i++) {
+    n = crossingsAt(topo.pos, grid, ox, oy + RAY_NUDGES[i][0], oz + RAY_NUDGES[i][1]);
+  }
+  // Every cast on an edge has no answer to read; say outside, as a miss does. The main
+  // wall paths also measure against the mesh (nearestPart, solidClearance).
+  return n > 0 && (n & 1) === 1;
+}
+
+/** Forward crossings of the +x ray at (oy, oz); -1 if it hit an edge or vertex. */
+function crossingsAt(pos, grid, ox, oy, oz) {
   const c = grid.cell(oy, oz);
   let crossings = 0;
   for (let i = grid.start[c]; i < grid.start[c + 1]; i++) {
@@ -546,11 +600,13 @@ export function insidePart(topo, rot, offset, qx, qy, qz) {
     const l1 = ((bz - cz) * (oy - cy) + (cy - by) * (oz - cz)) / d;
     const l2 = ((cz - az) * (oy - cy) + (ay - cy) * (oz - cz)) / d;
     const l3 = 1 - l1 - l2;
-    if (l1 < 0 || l2 < 0 || l3 < 0) continue;
+    if (l1 < -EDGE_EPS || l2 < -EDGE_EPS || l3 < -EDGE_EPS) continue;
 
     // x where the ray meets the triangle's plane; only forward hits count
     const hx = l1 * pos[o] + l2 * pos[o + 3] + l3 * pos[o + 6];
-    if (hx > ox) crossings++;
+    if (hx <= ox) continue;
+    if (l1 < EDGE_EPS || l2 < EDGE_EPS || l3 < EDGE_EPS) return -1;
+    crossings++;
   }
-  return (crossings & 1) === 1;
+  return crossings;
 }

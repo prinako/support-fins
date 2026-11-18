@@ -9,7 +9,9 @@
  * Why last and not in the normal pass: a short wall that "serves" a face stands a
  * wedge or a raster row down, and those hold it better (a tube lost 14 wedge tines
  * that way, tests/tails.test.js). Here it only lands where nothing else did, so a
- * part the engine already served is untouched.
+ * part the engine already served is untouched. Still-bare narrow struts then try
+ * the same longitudinal route as a joined lattice strut: splitting their curved
+ * edges into tiny patches or running across their width can leave no wall.
  *
  * A wall that comes within sideClear of a wall or wedge already built is dropped
  * (bounding boxes, conservative), and so is one that comes within sideClear of a
@@ -17,6 +19,8 @@
  */
 import { buildShortWalls, PROP } from '../prop.js';
 import { bareAfterWedges } from './wedges.js';
+import { heldCapture, keepSlice } from './heldtines.js';
+import { loneStrutRegions } from '../prop/lattice.js';
 
 /** [minX, minY, minZ, maxX, maxY, maxZ] over tris[from..to), one vertex per entry. */
 function boxOf(tris, from, to) {
@@ -41,29 +45,41 @@ export function lastResortWalls(topo, result, rot, opts, servedRegions, wedgeTri
   const bare = bareAfterWedges(topo, rot, result, servedRegions, wedgeTris);
   const none = { triangles: [], props: [], served: [], tines: 0 };
   if (!bare.length) return none;
-  const built = buildShortWalls(topo, result, rot, opts, new Set(bare));
-  if (!built.props.length) return none;
-
+  // (the tests' tine capture keeps only the walls that stay: fins/heldtines.js)
+  const first = heldCapture(() => buildShortWalls(topo, result, rot, opts, new Set(bare)));
+  const built = first.value;
   const others = [];
   for (let i = 0; i < existing.length; i += 3) others.push(boxOf(existing, i, i + 3));
   const triangles = [], props = [], served = new Set();
   let tines = 0;
-  for (const p of built.props) {
-    const ranges = p.triRanges ?? [];
-    const box = ranges.reduce((b, [a, z]) => {
-      const r = boxOf(built.triangles, a, z);
-      return [0, 1, 2].map((k) => Math.min(b[k], r[k])).concat([3, 4, 5].map((k) => Math.max(b[k], r[k])));
-    }, [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
-    if (others.some((o) => overlaps(box, o, PROP.sideClear))) continue;
-    const triRanges = ranges.map(([a, z]) => {
-      const at = triangles.length;
-      for (let i = a; i < z; i++) triangles.push(built.triangles[i]);
-      return [at, triangles.length];
-    });
-    others.push(box);                               // and the next short wall keeps off this one
-    props.push({ ...p, triRanges, short: true });
-    served.add(p.region);
-    tines += p.tines ?? 0;
+  const append = (built, held) => {
+    for (const p of built.props) {
+      const ranges = p.triRanges ?? [];
+      const box = ranges.reduce((b, [a, z]) => {
+        const r = boxOf(built.triangles, a, z);
+        return [0, 1, 2].map((k) => Math.min(b[k], r[k])).concat([3, 4, 5].map((k) => Math.max(b[k], r[k])));
+      }, [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
+      if (others.some((o) => overlaps(box, o, PROP.sideClear))) continue;
+      const triRanges = ranges.map(([a, z]) => {
+        const at = triangles.length;
+        for (let i = a; i < z; i++) triangles.push(built.triangles[i]);
+        return [at, triangles.length];
+      });
+      others.push(box);                               // and the next short wall keeps off this one
+      keepSlice(held, p.caps);
+      props.push({ ...p, triRanges, short: true });
+      served.add(p.region);
+      tines += p.tines ?? 0;
+    }
+  };
+  append(built, first);
+  // loneStruts: false is a test-only switch for comparing the old placement.
+  if (opts.loneStruts !== false) {
+    const remaining = loneStrutRegions(topo, result, rot, bare.filter(ri => !served.has(ri)));
+    if (remaining.size) {
+      const struts = heldCapture(() => buildShortWalls(topo, result, rot, { ...opts, strutWalls: true }, remaining));
+      append(struts.value, struts);
+    }
   }
   return { triangles, props, served: [...served], tines };
 }

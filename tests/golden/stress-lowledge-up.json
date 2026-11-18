@@ -8,60 +8,92 @@
       0
     ]
   },
-  "walls": 3,
+  "walls": 5,
   "tines": 0,
   "unserved": 0,
-  "triangles": 2616,
+  "triangles": 4060,
   "padTriangles": 0,
   "fins": [
     {
       "kind": "prop",
       "height": 0.8,
-      "length": 43,
+      "length": 40,
       "tines": 0,
       "from": [
-        -18,
-        -19.4,
+        24.4,
+        -20,
         0.8
       ],
       "to": [
-        25,
-        -19.4,
+        24.4,
+        20,
         0.8
       ]
     },
     {
       "kind": "prop",
       "height": 0.8,
-      "length": 43,
+      "length": 40,
       "tines": 0,
       "from": [
-        -18,
-        0,
+        14.925,
+        -20,
         0.8
       ],
       "to": [
-        25,
-        0,
+        14.925,
+        20,
         0.8
       ]
     },
     {
       "kind": "prop",
       "height": 0.8,
-      "length": 43,
+      "length": 40,
       "tines": 0,
       "from": [
-        -18,
-        19.4,
+        5.45,
+        -20,
         0.8
       ],
       "to": [
-        25,
-        19.4,
+        5.45,
+        20,
+        0.8
+      ]
+    },
+    {
+      "kind": "prop",
+      "height": 0.8,
+      "length": 40,
+      "tines": 0,
+      "from": [
+        -4.025,
+        -20,
+        0.8
+      ],
+      "to": [
+        -4.025,
+        20,
+        0.8
+      ]
+    },
+    {
+      "kind": "prop",
+      "height": 0.8,
+      "length": 40,
+      "tines": 0,
+      "from": [
+        -13.5,
+        -20,
+        0.8
+      ],
+      "to": [
+        -13.5,
+        20,
         0.8
       ]
     }
   ],
-  "sha256": "fcf1825785c159bf3d6b569aaabf603d5323a415301d9c9618f9f2e0c6ae5c97"
+  "sha256": "40bd5a33f4794e7ce2159ae0743df583110201dbc73fc55bf28ab0615bb60a34"
 }

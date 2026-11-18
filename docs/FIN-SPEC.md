@@ -309,6 +309,24 @@ over 7 layers. The printed numbers above still stand.
 | clash | ≥ 1 mm of air from another brace (square-ended foot and body rectangles compared at matching heights) and from any prop wall or wedge (compared at the bed, where both are widest) | two supports fused into one piece no longer break away in pieces; square ends allow clear braces on opposite sides of a thin part without imaginary rounded caps extending through it |
 | auto placement | up to 4 faces with bearings ≥ 60° apart, a rib per ~100 mm of face width, at the face's **tallest** columns | holds both axes; a rib at a gable's low end braces the half that wasn't moving |
 | manual | Draw mode: one click on an upright side; click a placed support to select it, Delete / "Remove selected" to take it out | |
+| manual: Anchor fins | the same rib, placed by hand only ("Anchor fins", off by default; adds nothing to Auto's build, shares the brace settings): a click stands one on an upright side **or** a back facing up, leaning up to **45°** (`faceTakesAnchor`). With Anchor fins off, Sway braces take upright sides only (≤ 30° either way, `faceIsUpright`); with both on, an upright side gets a sway brace and a leaning back an anchor | holding a leaning part from its back was hidden under Sway braces, which also turned on Auto's braces; the reporter asked for its own tool (GH #351) |
+| manual: short anchors | an anchor may stand **5 mm** tall (a brace **20 mm**, `SWAY.anchor.minH`); its depth at the bed keeps the brace's **8 mm** floor but no more than its height; **Brace depth** runs to **200%** for an anchor (a brace clamps at 50%; the field's max follows the Anchor fins switch, and turning it off brings a deeper value back to 50%); a short one squeezes its tine spacing to keep the **3-tine** floor (never under 2 layers); "Brace grip from" at or above its top refuses it by name | a doorstop at the foot of a side keeps a tall part on a small base from tipping over (BorisKozo's Stabilizer, #426, folded into anchors so one tool builds the fin); the 8 mm floor stays so default anchors aren't weaker than #427's |
+| manual: the face | a hand-placed brace stands on **its own strip** of the part (`web/swaycolumn.js`): every face connected to the click that takes a brace (≤ 30° down, ≤ 45° up), heading within **50°** of the clicked face, within **10 mm** either side of the click, with **no flatness limit**. Its inner edge follows that strip in **1 mm bands**; below or above the strip it follows whatever part is in the slab, and past both it holds plumb. A seam jog steeper than 45° is lifted out from the part; a stretch that leans past 45° over **4 mm** (a back rolling over) ends the brace there, or refuses it under 20 mm | Auto's flat patches (1.2 mm flatness) cut a side that curves up its height into short strips, so a brace was refused at most spots on a curved back ("only reaches 20 mm up", "the part sticks out") and worked only where a patch seam happened to fall (GH #351). 8 mm bands left tines bridging 3–4 mm on a bent arm; 1 mm bands keep them under the 1.5 mm limit |
+
+## Isolated narrow struts — `web/prop/lattice.js`, `web/fins/shortwalls.js`
+
+After the existing last-resort pass, retained overhang regions still untouched by
+walls or wedges can try the longitudinal route used for joined lattice struts.
+The footprint must be at least twice as long as it is wide, no wider than 7 mm
+(the lattice classifier's existing `2 * NET_HALF`), and long enough for the
+existing part-wall minimum. This addresses #121's isolated cross-sloped struts:
+down-slope tracks can run across their narrow width and be discarded.
+
+Existing supports stay in place. The 12 mm² region threshold, small-hole
+exemptions, short-wall aspect limits, part clearance and conservative exclusion
+around existing supports remain in force. This changes default placement only
+where a qualifying bare strut gains a safe wall; it does not guarantee support
+for every headset overhang. Physical printing remains unvalidated.
 
 ## Wall ribs (Full coverage) — `web/prop/brace.js`
 
@@ -347,12 +365,42 @@ set the numbers.
 
 | feature | value | rationale |
 |---|---|---|
-| when | plate walls over `BRACE.tallH` (**100 mm**), Auto, Full and Draw; the **Brace tall walls** box, on by default | the reporter's 10 cm, until the coupon prints |
+| when | plate walls over `BRACE.tallH` (**100 mm**), Auto, Full and Draw; the **Brace tall walls** box, on by default | the reporter's 10 cm; the wobble coupon recorded no failure height to move it to |
 | where | a pair, one off each face, every `BRACE.faceStep` (**30 mm**) of wall length, at the middle of each share; never off the ends | a long wall is stiff along its line; across it, it is a sheet |
-| reach / rise / flange | the Wall ribs': `footRatio` × height (halved while blocked, ≥ 1.5 mm), **50 %** of the height, `footMin` flange | one rib shape; R50 vs R80 is on the coupon |
+| reach / flange | the Wall ribs': `footRatio` × height (halved while blocked, ≥ 1.5 mm), `footMin` flange | one rib shape |
+| rise | `BRACE.tallRise` **85 %** of the height (the Wall ribs and sway cross ribs keep `rise` 50 %), still stopping 1 mm under the tip taper | wobble coupon (eight free-standing 120 mm walls, Bambu A1, fast run, one printer): a 120 mm wall ribbed to 50 % went bad near the top, above its rib. 85 % is from a beam estimate (resonance ~4×, top sway ~10× less than 50 %, rib plastic +49 % vs +29 % of the wall), not printed; height helps, reach doesn't |
 | order | last: after every wall, wedge, fill wall and sway brace | ribs built as walls went in took plate the next walls needed (the fill pass's lesson) |
 | clearance | `sideClear` off the part (only at stations whose floor is the plate) and off every other support below the rib's top, in plan, ~1 mm pieces | no rib fuses two pieces; a 3D box grid was exact but cost 4 s on bigplate Y35, this ~0.2 s |
 | skipped | a wall the fill pass already ribbed (the slim rule) | no doubled ribs |
+
+## Gussets (Draw only) — `web/gusset.js`
+
+Printed once: a 25 × 20 × 35 mm upside-down L at default settings (2026-10-28) printed
+clean, the gusset holding the arm. The angle, gap and tine spacing are starting values,
+not tuned from a coupon. Under an upside-down L every other support hangs straight
+down to the plate, though the L's own upright is right there. A gusset stands off the
+upright instead: a vertical triangle square off the side, tined to it across a flank's clearance, its top
+the usual tip under the overhang, its underside climbing out from the side steeply
+enough to print unsupported. Nothing under it reaches the plate. Placed by hand only:
+Draw > Gusset, a click on the side, then a click on the overhang.
+
+| feature | value | rationale |
+|---|---|---|
+| direction | the clicked face's normal, levelled; the second click sets only the reach | square off the side, so the inner end sits evenly off it |
+| inner end | **`PROP.sideClear`** (0.35 mm) off the side | a flank: `welds` fails one closer than 0.205 mm, so the tines bridge it |
+| underside | `GUSSET.angle` (**50°**) from level, never flatter than **45°** | the 45° a printer holds, with margin; a coupon should set it |
+| reach | **3–40 mm** out from the side | shorter is a tine; longer is a sail, stand a wall on the plate |
+| outer end | **2 mm** deep under the overhang (at least `minHeight` + `footGap`) | no knife edge at the tip |
+| body | `sweepBetween` run out from the side, its floor line the sloped underside | the part-attached wall's tip, gap and holes, unchanged |
+| side tines | sway's tine (`SWAY.tineW`, one layer, kissed) up the inner edge: one in the fin's **first layer**, one in its **top layer** under the gap, evenly between at most **2 mm** apart; built whether Tines is on or off | the side is all that holds the fin up until the overhang prints over it: its first layer would otherwise start in air |
+| top tines | `emitTines` along the contact line, as a drawn wall, when Tines is on | a horizontal tine bites sideways, so a sloped underside takes them and a flat one gets none, same as a drawn wall |
+| clearance | ends trimmed by `trimmedEnds` (the outer end may come in, the inner may not), every station through `clearBetween`, then the swept body measured by `solidClearance` against `welds` | a drawn part wall's checks, plus Auto's exact measure: a rib thinner than the 1 mm station pitch is seen only by the solid |
+| other supports | kept `PROP.sideClear` off Auto's fins on screen and every hand-placed support stood before it (`boxGrid`, in 3D) | two supports that touch fuse into one piece that won't break away; 3D, so the bed pad under a gusset is no clash |
+| refused | not an upright face (≤ 30° lean); the side doesn't reach ≥ 80 % of the inner edge, or isn't there at its first layer; the body would cut into or weld to the part; another support within `sideClear` | says why, before the click, in the ghost |
+
+## Wall bodies inside the part (Full coverage, Draw) — `web/prop/bodycut.js`, `web/fins/stepsplit.js`
+
+Station checks see only the stations, so at a step in the underside a wall's slanted edge can run through the part between two of them (1.7 mm deep on a tilted front panel). Every wall Draw or Full coverage places is measured once built: a body point `CUT_DEPTH` = 0.2 mm or more inside the part (exact pierce test, then samples every 0.4 mm on the wall's faces) is a cut. Full coverage rebuilds the line either side, stopping 2 stations short of the cut and parting up to 3 times; Draw refuses and asks for two lines. Contact under 0.2 mm isn't treated as a cut: on a knuckle at X30, 553 of 558 lines that crossed or nearly touched the part were under it, and refusing those cost 11% more bare overhang. The row search skips the measurement, since it throws most builds away; the walls it keeps are measured. Auto is unchanged.
 
 ## Joined walls and ties (Full coverage) — `web/fins/fill.js`, `web/prop/ties.js`
 
@@ -369,6 +417,89 @@ a mess"), and a 45° cleat sole needs walls down its slope that cross the one al
 | how high | to **70%** of the lower wall's height, and ≥ 1 mm under its tip taper | the contact, gap and tines are untouched |
 | clearance | `sideClear` (0.35) off the part (none inside it); off every support but its own two walls | a fused tie doesn't break away from the part |
 | order | after the ribs | ties don't take plate or room from walls or ribs |
+
+## Circular recess placement — `web/prop/circular.js`
+
+Complete, concentric circular boundaries with a straight radial profile have a
+shared local measurement: centre, inner/outer radius, radial heights and angular
+extent. The fit requires at least 12 boundary vertices, no missing sector over
+30°, and residuals within `max(0.002 mm, radius × 0.0001)`. Ellipses, partial
+boundaries, irregular rims and curved radial profiles retain their existing path.
+Flat circles can be measured; the additional placement currently applies to
+sloped annular recesses with room for the existing minimum wall span.
+
+Radial candidates derive their count from the existing coverage pitch, an outer
+edge pitch no wider than `maxUnsupportedSpan`, and foot clearance at the inner
+radius. Thus Sparse cannot remove useful supports merely to make circular counts
+agree; Dense can request more. No observed fin count is a preset. The local rim
+chord, or the area centroid of nearby geometry below the ceiling when asymmetric,
+defines the angular phase. A symmetric circle can change phase without changing
+its count. All measurements and intermediate placement remain double precision.
+
+Candidates are sampled at half the normal station step, then use the usual
+part-attached/plate builder, settling, tine generation and solid-clearance checks
+against the **complete** model. They compete against the existing placement on
+held area and lowest grip, including neighbouring faces. An equal-area candidate
+may win; a worse one retains the original layout, including useful baseline walls
+that fit beside it. `raster: false` continues to disable all placement races.
+
+This changes default geometry for accepted circular recesses. It does not
+redistribute already built supports or solve spacing across obstructed arcs.
+Related to GitHub #50; general organic and complex curved placement remains open.
+
+## Gently bent small tubes — `web/prop/tubecurve.js`
+
+For #50, a small tube rejected by the straight-axis convexity test can try its
+actual lowest line. Vertical cross-sections of the source triangles locate one
+connected minimum each; the existing convexity and two-sided-area thresholds
+are then evaluated about the local line. The candidate competes with the same
+split-patch route and still passes ordinary placement and clearance checks.
+
+Missing or ambiguous minima, abrupt jumps between branches, and lines beyond
+the existing `maxWander` limit are refused. Concave pockets do not become tubes.
+This changes default placement for accepted gently bent undersides, without
+changing circular-recess rules or promising support for arbitrary organic
+surfaces. The procedural regression and public Lissajous example establish
+software behavior; physical printing remains unvalidated.
+
+## Arc walls (Auto and Full) — `web/prop/arc.js`
+
+Not printed yet. One wall along a level overhang that curves in plan: a slot cut through
+a tube's wall, whose ceiling is a strip the wall's thickness wide bent round the tube's
+axis. Its faces point straight down, so it has no slope for downhill walls; the patch path
+read it as a plane and laid straight tracks, which only cut across a bending strip
+(Ø30 tube, 1.6 mm wall, 22 mm slot: no line at all; Ø50, 2.5 mm: pieces, 71% of the
+ceiling right over a wall in Full). The wall itself is the ordinary one (part-attached
+here: it stands on the slot's sill).
+
+| feature | value | rationale |
+|---|---|---|
+| strip | the region rises ≤ `contourSlopeMin` × `ARC.maxWidth` (**0.9 mm**) and is ≤ **6 mm** across at every station (`ARC.maxWidth`) | one wall then has each edge within 3 mm, half the 6 mm held rule; wider bands keep rows. The level test is the whole region's, not the line's: on a sloping chamfer an arc can run along a contour and read level (ssdMounts-Chamfer X60 lost 96 → 11%) |
+| open | at least **30°** of the circle left open (`ARC.minGap`) | complete rings are circular.js's (it takes gaps up to 30°) |
+| line | a least-squares circle through the region's points gives a centre; stations **1 mm** apart round it (`stationStep`), each midway between the strip's edges along the radius, probed **0.05 mm** apart (`ARC.probe`) | the vertices alone are too sparse: a station seeing one edge's vertices sat 0.5 mm off the middle of a 1.6 mm strip |
+| bend | > **10°** (`CURVED.minBend`, read by `lineBend`) | a straight strip stays the patch path's, unchanged |
+| race | against the region's split tracks, like a small tube (`prop/rival.js`): the one holding more overhang stays, and the arc keeps a **tie** | the straight tracks often hold the same by the 12 mm reach while standing under a third of the strip |
+| result | the four test slots (Ø24–50, 1.2–2.5 mm walls, 20–40 mm wide): one wall each, Auto and Full, 95–100% of the ceiling right over it, top 0.2 mm under, flanks ≥ 0.7 mm off; the 864-case sweep byte-identical | |
+
+## Rim walls (Auto and Full) — `web/prop/rim.js`, `web/prop/judge.js`
+
+Not printed yet. Local issue 062 / #269: rows cross a patch one way, so along an edge
+they don't run parallel to, each stops at the edge and the outline between two row ends
+hangs free -- it curls or droops (a cable reel's stadium flange: its curved flanks bare
+all round, yet 100% by the 6 mm held rule). A rim wall stands under that outline and the
+rows stop short of it. Holding the edge takes precedence over crossing the slicer's
+bridge there, so a rim may run along the bridge lines (Matthew).
+
+| feature | value | rationale |
+|---|---|---|
+| region | level: most of its area within **10°** of flat (`RIM.levelDeg`) | a sloped patch's rows already run out to its edges; a rim round a tilted face only rings it (tube X25: 8 walls for 4) |
+| free edge | the region meets part going UP, a sliver below `MIN_REGION_AREA`, or nothing; not a kept overhang face, not part going DOWN (by the face across the edge, or the part 0.5 mm out and 0.5 mm under it -- a deck laid on an unwelded post), not at the bed (< `minHeightSquat`) | the layer builds out from part that goes down |
+| line | stations **1 mm** apart (`stationStep`), **`edgeInset`** in from the edge | as a flush end row |
+| pieces | ≤ **40 mm** long (`RIM.pieceLen`), ≤ **90°** of turn (`RIM.pieceTurn`), **1.5 mm** apart (`RIM.pieceGap`) | a closed ring round a flange can't be pulled out; an arc can |
+| rows | every station within `th` + `sideClear` of the rim dropped (the row split into its runs) | rows bridge to the rim instead of fusing into it |
+| race | per region against what the earlier races built (raster and circular swaps keep theirs), scored by the judge: held = within a **2 mm** cantilever past a wall face (provisional, lip coupon) or bridged between anchors ≥ **135°** apart within `maxUnsupportedSpan` + a wall; must hold more AND at least **0.01 mm² per mm³** added (`JUDGE.price`, provisional) | the 6 mm held rule can't tell a bridge from a cantilever |
+| result | cable reel upright 97.3 → 100% held (+28 g, 33 → 49 walls); 864-case sweep: 851 byte-identical, +7 g overall | |
+| switch | `opts.rimWalls === false` or `opts.raster === false`: off | |
 
 ## Downhill walls (Auto and Full) — `web/prop/downhill.js`, `web/fins/downhill.js`
 
@@ -464,6 +595,16 @@ The extra half-tip, `max(0, (tip − 0.6) / 2)`, is added to the reach: 0.15 at 
 that extra half-tip): at a fixed 0.6 a 2.0 nozzle's 3 mm tip and 2.5 mm tines hung 1.2 mm
 past the part's edge -- tabs out of the wall's side (cube at X30). The tip's face stays
 0.3 mm inside the edge at every nozzle; the wider wall body below it may reach past.
+The flush end row is a **candidate the judge races** (`web/prop/endrows.js`, local issue
+062): per region, the mid-strip rows against the same rows with each free end's row moved
+out flush -- one more row, never doubled (#384) -- and the flush layout stays unless
+the judge (`web/prop/judge.js`) scores the mid-strip rows higher -- a tie keeps flush, no
+plastic price. It replaced a slope cutoff (`PROP.edgeFlatDeg`, 45 deg; a cube at X35-X44
+kept a 6.7 mm strip bare along each side edge, #269). **With Sway on, 30 deg**
+(`PROP.edgeFlatDegSway`): the candidate is not offered past it -- the flush wall stands at
+the foot of the upright side a brace needs, ~5 mm of it, so the braces win there. A brace
+placed by hand with Sway off is still kept off the flush walls -- tick Sway to give the
+braces those columns.
 The plugins build at 0.4 for now. The comb's scan step follows the tine
 width, so a 0.2 comb can land a tine or two fewer. The nozzle is a printer setting:
 remembered across visits, left alone by a loaded session.

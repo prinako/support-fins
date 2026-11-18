@@ -12,7 +12,7 @@ import { el } from './dom.js';
 const pinsOn = () => PROP.tineDir === 'vertical';
 const tineCount = (n) => (pinsOn() ? tn('{n} pin', '{n} pins', n) : tn('{n} tine', '{n} tines', n));
 import { removedIds } from './remove.js';
-import { drawnWalls, drawMsg, selectedWall, selectedNote, drawShown, drawMaterial } from './walls.js';
+import { drawnWalls, drawMsg, selectedWall, selectedNote, drawShown, drawMaterial, drawShapeNow } from './walls.js';
 import {
   finMode, finsVisible, materialDensity, syncSectionSums, autoLike,
 } from './settings.js';
@@ -20,6 +20,7 @@ import { analysisTiming, topology, lastResult, rotM3 } from './part.js';
 import { islandsBuilt } from './islands.js';
 import { ifaceMaterial } from './scene.js';
 import { activeAdded, activeWalls, finMaterial, padMaterial } from './finbuild.js';
+import { syncReport } from './report.js';
 
 // The "fins won't hold most of this" warning (updateReadout): over half the red bare,
 // and at least this much of it, so a part with a few bare slivers isn't told to
@@ -166,6 +167,7 @@ export function updateReadout(built, ms) {
   islandsBuilt(finsVisible && finMode === 'full' && built
     ? (built.fill ? { bare: built.fill.islandsBare, capped: built.fill.islandsCapped } : { all: true }) : null);
   updateReceipt();
+  syncReport();
 }
 
 /**
@@ -210,14 +212,22 @@ function updateDrawReadout(built, ms) {
   const ok = drawnWalls.filter((w) => w.ok);
   const bad = drawnWalls.length - ok.length;
   const tines = ok.reduce((a, w) => a + (w.info?.tines ?? 0), 0);
-  const braces = ok.filter((w) => w.kind === 'sway').length;
-  const walls = ok.length - braces;
+  const braces = ok.filter((w) => w.kind === 'sway' && !w.anchor).length;
+  const anchors = ok.filter((w) => w.kind === 'sway' && w.anchor).length;
+  const gussets = ok.filter((w) => w.kind === 'gusset').length;
+  const walls = ok.length - braces - anchors - gussets;
+  // a gusset's side tines are built with Tines off too: counted on their own
+  const sideTines = ok.reduce((a, w) => a + (w.info?.sideTines ?? 0), 0);
   const ribs = ok.reduce((a, w) => a + (w.kind === 'sway' ? 0 : w.info?.braces ?? 0), 0);
-  const crosses = ok.reduce((a, w) => a + (w.kind === 'sway' ? w.info?.cross ?? 0 : 0), 0);
+  // cross ribs counted with what they brace: sway braces' with the braces, anchors' with the anchors
+  const crossesOf = (anchor) => ok.reduce((a, w) => a + (w.kind === 'sway' && !w.anchor === !anchor ? w.info?.cross ?? 0 : 0), 0);
+  const ribsTxt = (n) => (n ? ` · ${tn('{n} brace rib', '{n} brace ribs', n)}` : '');
   const parts = [];
   if (walls) parts.push(tn('{n} drawn wall', '{n} drawn walls', walls) + (ribs ? ` · ${tn('{n} wall rib', '{n} wall ribs', ribs)}` : ''));
-  if (braces) parts.push(tn('{n} sway brace', '{n} sway braces', braces)
-    + (crosses ? ` · ${tn('{n} brace rib', '{n} brace ribs', crosses)}` : ''));
+  if (braces) parts.push(tn('{n} sway brace', '{n} sway braces', braces) + ribsTxt(crossesOf(false)));
+  if (anchors) parts.push(tn('{n} anchor fin', '{n} anchor fins', anchors) + ribsTxt(crossesOf(true)));
+  if (gussets) parts.push(tn('{n} gusset', '{n} gussets', gussets)
+    + (sideTines ? ` · ${tn('{n} side tine', '{n} side tines', sideTines)}` : ''));
   box.textContent = ok.length
     ? parts.join(' + ') + (tines ? ` · ${tineCount(tines)}` : '')
     : t('none yet');
@@ -226,8 +236,14 @@ function updateDrawReadout(built, ms) {
   const lead = [];
   const help = [];
   if (!drawnWalls.length && !drawMsg) {
-    lead.push(t('Click two points across an overhang (a line lands right where you '
-      + 'draw it, red faces included) to lay a breakaway wall under it'));
+    lead.push(drawShapeNow() === 'gusset'
+      ? t('Click a side of the part under an overhang, then the overhang itself, '
+        + 'to stand a gusset off the side')
+      : drawShapeNow() === 'curve'
+      ? t('Click the two ends of a curve on the overhang, then a point it runs through, '
+        + 'to lay a curved breakaway wall under it')
+      : t('Click two points across an overhang (a line lands right where you '
+        + 'draw it, red faces included) to lay a breakaway wall under it'));
   }
   if (ok.length) {
     help.push(tines
@@ -250,7 +266,7 @@ function updateDrawReadout(built, ms) {
   }
   if (bad) {
     const one = drawnWalls.find((w) => !w.ok);
-    const reason = one?.info?.reason ? ` (${t(one.info.reason)})` : '';
+    const reason = one?.info?.reason ? ` (${t(one.info.why ?? one.info.reason, one.info.params)})` : '';
     lead.push(tn('{n} wall couldn’t build here{reason}. Undo, or redraw',
                  '{n} walls couldn’t build here{reason}. Undo, or redraw', bad, { reason }));
   }
@@ -395,7 +411,7 @@ function updateFinReadout(built, ms) {
     const bad = drawnWalls.length - drawnOk;
     if (bad) {
       const one = drawnWalls.find((w) => !w.ok);
-      const reason = one?.info?.reason ? ` (${t(one.info.reason)})` : '';
+      const reason = one?.info?.reason ? ` (${t(one.info.why ?? one.info.reason, one.info.params)})` : '';
       lead.push(tn('{n} drawn wall couldn’t attach here{reason}', '{n} drawn walls couldn’t attach here{reason}', bad, { reason }));
     }
     if (drawMsg) lead.push(drawMsg);
@@ -451,7 +467,10 @@ function updateFinReadout(built, ms) {
       help.push(t('Auto already reaches every overhang here, so Full coverage added nothing.'));
     }
     const bare = Math.round(fl.unservedArea);
-    if (fl.capped) {
+    if (fl.stopped) {
+      // Stop on a live build (ui/livebuild.js): the walls shown, not the best layout
+      lead.push(t('Full coverage was stopped early, with {area} mm² of overhang still bare — change any setting to build it in full', { area: bare }));
+    } else if (fl.capped) {
       lead.push(t('Full coverage stopped at its wall limit with {area} mm² of overhang still bare — rotate the part, or add a wall by hand', { area: bare }));
     } else if (bare >= 1 && !mostlyBare) {   // (else the figure warning below says it)
       lead.push(t('{area} mm² of overhang no wall can reach this way up — tilt the part, or add a wall by hand', { area: bare }));

@@ -8,7 +8,8 @@
  * where its tube line sat off to one side), and better on others (drive frame
  * x60: 22 -> 34%). So the tube is built first, taken back out, the region's
  * split patches are built from the same starting point, and whichever holds more
- * overhang area stays. A tie keeps the patches.
+ * overhang area stays. A tie keeps the patches -- but an arc wall (prop/arc.js),
+ * raced the same way, keeps a tie.
  *
  * buildProps drives it from its patch loop:
  *
@@ -23,9 +24,13 @@
 import { MIN_REGION_AREA } from '../overhangs.js';
 import { PROP } from './config.js';
 
-export function tubeRivalry(acc, topo, result, partTris) {
+/**
+ * Snapshot and undo of everything the patch loop accumulates (`acc`, see
+ * tubeRivalry), for a route that is built, judged, and maybe taken back out.
+ * Shared with the bridge race (prop/bridgerace.js).
+ */
+export function routeState(acc) {
   const { out, props, skipped, served, tally } = acc;
-
   const snapshot = () => ({ out: out.length, props: props.length, tines: tally.tines,
                             skipped: { ...skipped }, sagRisk: tally.sagRisk, served: new Set(served) });
   const restore = (m) => {
@@ -33,6 +38,12 @@ export function tubeRivalry(acc, topo, result, partTris) {
     Object.assign(skipped, m.skipped);
     served.clear(); for (const r of m.served) served.add(r);
   };
+  return { snapshot, restore };
+}
+
+export function tubeRivalry(acc, topo, result, partTris) {
+  const { out, props, skipped, served, tally } = acc;
+  const { snapshot, restore } = routeState(acc);
   // Undo the region's patches and put its tube's walls back instead, moved to
   // the end of `out` (so every triRange shifts by the same amount).
   const keepTube = (r) => {
@@ -97,7 +108,10 @@ export function tubeRivalry(acc, topo, result, partTris) {
   const settle = (p) => {
     const r = p?.rival;
     if (!r || p !== r.last) return;
-    if (r.tube.held > heldArea(r, out, r.start.out) + 1e-6) keepTube(r);
+    // an arc (prop/arc.js) keeps a tie: it stands under the strip's whole length,
+    // the straight tracks only reach it
+    const rival = heldArea(r, out, r.start.out);
+    if (r.arc ? r.tube.held >= rival - 1e-6 : r.tube.held > rival + 1e-6) keepTube(r);
     else skipped.sliver += r.slivers;
   };
 
@@ -121,7 +135,8 @@ export function tubeRivalry(acc, topo, result, partTris) {
       const rivals = patch.smallTube.filter((p) => p.area >= MIN_REGION_AREA);
       // slivers count only if the patch path keeps the region, as they did before
       const rival = { last: rivals[rivals.length - 1], tube, faces: patch.faces, tris: patch.tris, reach: patch.reach,
-                      slivers: patch.smallTube.length - rivals.length, region: patch.region, start: null };
+                      slivers: patch.smallTube.length - rivals.length, region: patch.region, start: null,
+                      arc: !!patch.arc };
       if (!rivals.length) keepTube(rival);
       for (const p of rivals) {
         p.region = patch.region;

@@ -9,8 +9,8 @@
  *
  * Split out of prop.js, which re-exports the public names.
  */
-import { insidePart } from '../inside.js';
-import { longestRun } from './clearance.js';
+import { insidePart, nearestPart } from '../inside.js';
+import { longestRun, welds } from './clearance.js';
 import { PROP } from './config.js';
 import { contourTop, lowerSag, settleTop } from './contact.js';
 import { floorLine, moldLine } from './mold.js';
@@ -71,8 +71,13 @@ function enclosedColumn(top, floor, k, topo, rot, offset) {
  * (floor, top) span the wall actually occupies -- it probes STRICTLY between the
  * ends, since the bottom is meant to weld to the floor and the top to break away
  * under the overhang, and probing those would read the intended contacts as welds.
+ *
+ * Parity alone missed a side wall the station sits ON: in a recessed box (#119)
+ * the run's last station landed exactly on the box's end wall, outside the part,
+ * so the wall's end cap was built flush against it and welded. So the outline is
+ * also measured, the way stationCertified measures a plate wall's (`welds`).
  */
-function clearBetween(top, floor, k, topo, rot, offset) {
+export function clearBetween(top, floor, k, topo, rot, offset) {
   const p = top[k];
   const a = top[Math.max(0, k - 1)];
   const b = top[Math.min(top.length - 1, k + 1)];
@@ -84,13 +89,30 @@ function clearBetween(top, floor, k, topo, rot, offset) {
   const nP = Math.max(3, Math.ceil((zTop - zBot) / 1.5));
   for (let i = 1; i < nP; i++) {                 // strictly interior heights
     const z = zBot + ((zTop - zBot) * i) / nP;
-    for (const m of [0.12, 0.24, PROP.sideClear]) {
+    for (const m of [Math.min(0.12, PROP.sideClear), Math.min(0.24, PROP.sideClear), PROP.sideClear]) {
       const w = PROP.th / 2 + m;
       if (insidePart(topo, rot, offset, p[0] + sx * w, p[1] + sy * w, z)) return false;
       if (insidePart(topo, rot, offset, p[0] - sx * w, p[1] - sy * w, z)) return false;
     }
+    for (const o of [0, PROP.th / 2, -PROP.th / 2]) {
+      const hit = nearestPart(topo, rot, offset, p[0] + sx * o, p[1] + sy * o, z);
+      if (hit && welds(hit)) return false;
+    }
   }
   return true;
+}
+
+/**
+ * A hand-drawn part wall's ends, trimmed the way Auto's are (#119 follow-up): stations
+ * are dropped from each end while clearBetween refuses them, so the cap is never built
+ * flush against a side wall. Only the ENDS -- a line the user drew past a flank in the
+ * middle stays as drawn. Returns [from, to) into `top`, or null when too little is left.
+ */
+export function trimmedEnds(top, floor, topo, rot, offset) {
+  let a = 0, b = top.length;
+  while (a < b && !clearBetween(top, floor, a, topo, rot, offset)) a++;
+  while (b > a && !clearBetween(top, floor, b - 1, topo, rot, offset)) b--;
+  return b - a >= PROP.minStations ? [a, b] : null;
 }
 
 /**
@@ -114,7 +136,7 @@ function clearBetween(top, floor, k, topo, rot, offset) {
  * refuses to pierce side walls (clearBetween). A wall inside a bore is built and
  * flagged `inBore` (enclosedColumn).
  */
-export function buildPartAttached(line, partTris, topo, rot, offset, out) {
+export function buildPartAttached(line, partTris, topo, rot, offset, out, captureWall = false) {
   const top = line.map((p) => [p[0], p[1], p[2]]);
   contourTop(top, partTris, PART_BAND);
   lowerSag(top, partTris, PART_BAND);
@@ -177,6 +199,7 @@ export function buildPartAttached(line, partTris, topo, rot, offset, out) {
     prop: {
       span, height, stations: subTop.length, volume: Math.abs(vol),
       partAttached: true, inBore,
+      ...(captureWall ? { turnWall: { top: mold.top, floor: mold.floor, count: out.length - before } } : {}),
       line: subTop.map((p) => [p[0], p[1], p[2] - PROP.gap]),
     },
   };

@@ -9,6 +9,7 @@ on:
       - 'nginx.conf'
       - 'LICENSE'
       - '.github/workflows/container.yml'
+      - 'docker-compose*.yml'
   push:
     branches: [main, dev, latest]
     paths:

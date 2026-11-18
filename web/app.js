@@ -1,3 +1,5 @@
+// First: its key guard must run before every other keydown listener (ui/lock.js)
+import { uiLocked } from './ui/lock.js';
 import { setLanguage, updateDomTranslations } from "./ui/i18n.js";
 /**
  * Support Fins: the page's entry point. Every feature lives in web/ui/ (one
@@ -27,6 +29,7 @@ import { loadURL } from './ui/io.js';
 import { applyVolume } from './ui/volume.js';
 import { buildExportGeometry } from './ui/export.js';
 import './ui/plugins.js';
+import './ui/whatsnew.js';
 import './ui/calibrate.js';
 import './ui/topbar.js';
 import './ui/phone.js';
@@ -37,7 +40,7 @@ import './ui/scale.js';
 import { updateReadout } from './ui/readout.js';
 import {
   drawnWalls, drawnTris, drawStart, selectedWall, drawActive, sizeMarkers, clearPreview,
-  selectWall, removeSelected, drawHover, drawClick, braceActive, braceHover, braceClick, dropBracePreview,
+  selectWall, removeSelected, drawHover, drawClick, braceActive, braceHover, braceClick, dropBracePreview, undoDrawPoint,
 } from './ui/walls.js';
 import { finTris, padTris, lastBuilt } from './ui/finbuild.js';
 import { initSettings } from './ui/settings.js';
@@ -61,6 +64,11 @@ addEventListener('keydown', (e) => {
   const textField = tag === 'TEXTAREA' || (tag === 'INPUT' && !['range', 'checkbox', 'radio'].includes(e.target.type));
   const histKey = (e.metaKey || e.ctrlKey) && ['z', 'y'].includes(e.key.toLowerCase());
   if (textField || ((tag === 'INPUT' || tag === 'SELECT') && !histKey)) return;
+  // a wall half drawn: Backspace takes back its last point (a curve's end, then its start)
+  if (e.key === 'Backspace' && drawActive() && undoDrawPoint()) {
+    e.preventDefault();
+    return;
+  }
   if (selectedWall && (e.key === 'Delete' || e.key === 'Backspace')) {
     e.preventDefault();
     removeSelected();
@@ -147,6 +155,8 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   // a drag or a pinch is navigation, not a pick; with Move on, nothing is picked (a
   // click on a parked model still edits it: ui/plates.js)
   if (!isTap(e) || moveActive()) return;
+  // a live Full build locks every pick that would change it (ui/lock.js): the view only
+  if (uiLocked()) return;
   // a click on the section plane's handle is the handle's, not a pick
   if (pressOnPlane) return;
 

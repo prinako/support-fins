@@ -26,6 +26,44 @@ import { unzip, zipStore } from '../../../web/zip.js';
 
 const LBRACKET = Deno.readFileSync(`${MODELS}lbracket.stl`);
 
+Deno.test('cli: independent part clearances reach the engine', async () => {
+  const pos = new Float32Array([...block(-20, 20, -5, 5, 0, 5), ...block(-20, 20, -5, 5, 15, 17),
+    ...block(-20, 20, -5, -1.1, 5, 15), ...block(-20, 20, 1.1, 5, 5, 15)]);
+  const triples = Array.from({ length: pos.length / 3 }, (_, i) => Array.from(pos.slice(i * 3, i * 3 + 3)));
+  const files = { 'pocket.stl': new Uint8Array(await writeBinarySTL(triples).arrayBuffer()) };
+  const args = ['pocket.stl', '-o', 'out.stl', '--no-tines', '--pad-style', 'off'];
+  const baseline = await cli(args, files);
+  const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+  for (const flags of [['--bottom-gap', '0.4'], ['--side-clearance', '1']]) {
+    const r = await cli([...args, ...flags], files);
+    assert(r.code === 0, r.err.join('\n'));
+    assert(!same(baseline.fs.get('out.stl'), r.fs.get('out.stl')), `${flags} had no effect`);
+  }
+  const resin = await cli([...args, '--tine-dir', 'vertical', '--bottom-gap', '0.4'], files);
+  assert(resin.err.some(s => s.includes('bottom-gap does nothing')), 'inactive settings were not reported');
+  const zero = await cli([...args, '--side-clearance', '0'], files);
+  assert(zero.code !== 0 && !zero.fs.has('out.stl'), 'side clearance below 0.2 accepted');
+  const help = await cli(['--help']);
+  assert(['--side-clearance', '--bottom-gap'].every(flag => help.out.join('\n').includes(flag)), 'help omitted controls');
+});
+
+Deno.test('cli: turning is opt-in, project-only and has a bounded absolute angle', async () => {
+  assert(parseArgs([]).turnFins === null && parseArgs([]).turnAngle === null);
+  assert(parseArgs(['--turn-fins', '--no-turn-fins']).turnFins === false);
+  assert(parseArgs(['--turn-fins', '--turn-angle=180']).turnAngle === 0);
+  assert(parseArgs(['--turn-angle', '37.5']).turnAngle === 37.5);
+  for (const flags of [['--turn-fins'], ['--no-turn-fins'], ['--turn-angle', '0'],
+    ['--preserve-project', '--turn-angle', '90'], ['--preserve-project', '--turn-fins=true'],
+    ...['', 'NaN', 'Infinity', '-1', '181'].map((v) => ['--preserve-project', '--turn-fins', `--turn-angle=${v}`])]) {
+    let reads = 0;
+    const errors = [];
+    const code = await run(['p.3mf', ...flags], { read: () => { reads++; }, out: () => {}, err: (s) => errors.push(s) });
+    assert(code === 2 && reads === 0 && errors.join().includes('--turn'), JSON.stringify({ flags, code, reads, errors }));
+  }
+  const help = await cli(['--help']);
+  assert(help.out.join().includes('--turn-fins') && help.out.join().includes('--turn-angle'), 'help omits turning');
+});
+
 Deno.test('cli: nozzle reaches generated geometry, defaults to 0.4 and rejects bad arguments before I/O', async () => {
   const args = ['lb.stl', '--rot', '0,35,0', '-o', 'out.stl'];
   const plain = await cli(args), explicit = await cli([...args, '--nozzle', '0.4']);

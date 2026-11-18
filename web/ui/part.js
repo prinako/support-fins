@@ -200,6 +200,7 @@ export function stashPart() {
   hideLayerView();
   showToolbar(false);
   el('stats').hidden = true;
+  el('s-big-note').textContent = '';      // the next part's report says it again
   el('status').hidden = true;
   el('drop').classList.remove('hidden');
   // the whole bare plate in view, not the spot the part sat on
@@ -451,6 +452,7 @@ function report(filename, size) {
 
   lastSize = size;
   updateFit();
+  document.dispatchEvent(new Event('partsizechange'));   // Scale's mm fields (ui/scale.js)
 
   // Empty string hides it: `.note:empty { display: none }`, same as the sibling notes.
   el('s-import-note').textContent = importNote;
@@ -496,6 +498,11 @@ export function updateFit() {
     : off && clash ? `${t('models overlap')} · ${t('hangs off the bed')}`
       : off ? t('hangs off the bed') : clash ? t('models overlap') : t('fits');
   fit.classList.toggle('warn', big || off || clash);
+  // The part alone too big: fins take longer the bigger it is, and a part scaled
+  // metres across (Scale has no top, #440) can build for minutes. Said, not refused.
+  const huge = lastSize.x > v.x || lastSize.y > v.y || lastSize.z > v.z;
+  el('s-big-note').textContent = huge
+    ? t('Too big for the build volume — the bigger the part, the longer fins take (minutes on a part metres across).') : '';
 }
 
 export let lastResult = null;

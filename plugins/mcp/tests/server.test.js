@@ -9,11 +9,35 @@
 //   deno test -A plugins/mcp/tests/
 import { handle, callTool, TOOLS, PROTOCOL_VERSIONS } from '../server.js';
 import { run, OPTION_FLAGS } from '../../cli/cli.js';
-import { MODELS, assert } from '../../../tests/_util.js';
+import { MODELS, assert, block } from '../../../tests/_util.js';
+import { writeBinarySTL } from '../../../web/stl.js';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { unzip } from '../../../web/zip.js';
 
 const LBRACKET = Deno.readFileSync(`${MODELS}lbracket.stl`);
+
+Deno.test('mcp: part clearances match the CLI', async () => {
+  const pos = new Float32Array([...block(-20, 20, -5, 5, 0, 5), ...block(-20, 20, -5, 5, 15, 17)]);
+  const triples = Array.from({ length: pos.length / 3 }, (_, i) => Array.from(pos.slice(i * 3, i * 3 + 3)));
+  const files = { 'shelf.stl': new Uint8Array(await writeBinarySTL(triples).arrayBuffer()) };
+  const outputs = [];
+  for (const value of [0.1, 0.3]) {
+    const io = memIO(files);
+    const r = await callTool('fin_part', { path: 'shelf.stl', output: 'out.stl', settings: {
+      'side-clearance': 0.5, 'bottom-gap': value } }, io);
+    const cli = await viaCLI(['shelf.stl', '-o', 'out.stl', '--side-clearance', '0.5', '--bottom-gap', String(value)], files);
+    assert(!r.isError && cli.code === 0, r.content[0].text);
+    const bytes = io.fs.get('out.stl');
+    assert(same(bytes, cli.fs.get('out.stl')), 'MCP differs from CLI');
+    outputs.push(bytes);
+  }
+  assert(!same(...outputs), 'bottom gap did not reach geometry');
+});
+Deno.test('mcp: side clearance below 0.2 mm is refused', async () => {
+  const r = await callTool('fin_part', {path:'lb.stl', output:'out.stl', settings:{'side-clearance':0}}, memIO());
+  assert(r.isError, 'zero side clearance accepted');
+});
 const ENTRY = fileURLToPath(new URL('../support-fins-mcp.js', import.meta.url));
 
 function memIO(files = { 'lb.stl': LBRACKET }) {
@@ -30,6 +54,11 @@ async function viaCLI(argv, files) {
   return { code, fs: io.fs };
 }
 const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+/** Two 3MFs hold the same entries (their zip bytes differ with the runtime's deflate). */
+async function same3MF(a, b) {
+  const [x, y] = [await unzip(a), await unzip(b)];
+  return [...x.keys()].join() === [...y.keys()].join() && [...x].every(([n, v]) => same(v, y.get(n)));
+}
 const rpc = (method, params, id = 1) => ({ jsonrpc: '2.0', id, method, params });
 
 Deno.test('mcp: initialize negotiates the protocol and offers tools', async () => {
@@ -162,7 +191,8 @@ for (const [runtime, cmd, args] of [['deno', Deno.execPath(), ['run', '-RWE', EN
       assert(byId.get(null).error.code === -32700, 'a bad line is a parse error, not a crash');
       assert(byId.get(2).result.isError === false, JSON.stringify(byId.get(2)));
       const cli = await viaCLI(['lb.stl', '--rot', '0,35,0']);
-      assert(same(await Deno.readFile(`${dir}/lb-fins.3mf`), cli.fs.get('lb-fins.3mf')), 'file on disk = the CLI\'s');
+      // the same entries: Node's zlib and Deno's deflate the same XML to different bytes
+      assert(await same3MF(await Deno.readFile(`${dir}/lb-fins.3mf`), cli.fs.get('lb-fins.3mf')), 'file on disk = the CLI\'s');
       assert(byId.get(3).result.structuredContent.output === join(await Deno.realPath(dir), 'rel.stl'), JSON.stringify(byId.get(3)));
       assert((await Deno.stat(`${dir}/rel.stl`)).size > 0, 'relative output lands in the server\'s directory');
       await Deno.remove(dir, { recursive: true });

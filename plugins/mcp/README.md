@@ -19,7 +19,7 @@ Both take `path` (an `.stl` or `.3mf`; absolute, or relative to where the server
 started -- which for Claude Desktop is `/`, so give absolute paths there; `~/` works), `object` for a 3MF with several objects, and `settings`: every setting the
 site has, named as the CLI's flags (`coverage`, `tine-density`, `pad-style`, `sway`, ...)
 in the site's units (percent sliders 0-100). The client sees the whole list, with
-defaults and ranges, in the tool schema. `fin_part` also takes `rot`: `[x, y, z]`, the
+defaults and ranges, in the tool schema (and in [docs/PLUGIN-CONFIG.md](../../docs/PLUGIN-CONFIG.md)). `fin_part` also takes `rot`: `[x, y, z]`, the
 "X · Y · Z" readout under the part on printfins.com.
 
 For Full coverage with separated fill walls, pass
@@ -28,6 +28,13 @@ For Full coverage with separated fill walls, pass
 or `"off"`. It keeps fill walls from crossing or sharing their bases, but can leave
 more overhang unsupported; thin ties between tall walls stay. In Auto placement (`"mode": "auto"`) it has no
 effect and returns a warning.
+
+For independent clearances, use
+`"settings": {"side-clearance": 0.35, "bottom-gap": 0.2}`.
+The clearances are in millimetres. Top clearance remains `gap`. Resin ignores
+bottom gap. Plate feet are unchanged.
+
+Side clearance is 0.2 to 1 mm: a wall closer than 0.2 mm would fuse to the part.
 
 The result is the CLI's report line ("5 walls, 20 tines; 1 overhang is too shallow for a
 fin this way up (tilt the part steeper)") plus the numbers behind it. Unsupported

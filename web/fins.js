@@ -28,12 +28,14 @@
  *   shortwalls.js the last resort: short, stocky walls where nothing else reached
  *   coverage.js   which red must be held (MUST / tiny HOLE / near-plate LOW) and the
  *                 reach rule that holds it -- shared with the coverage scoreboard
+ *   heldtines.js a built wall's tines held out of the tine capture until the pass keeps it
  *   fill.js       Full coverage: Draw-built walls under the red Auto left bare
  *   tall.js       face ribs on walls over BRACE.tallH, last, around everything placed
  *   downhill.js   downhill walls kept only if the whole build is no worse (#25)
  *
  * Each module imports only modules above it in this list and never fins.js.
  */
+import { turnBuilt } from './prop/turn.js';
 import { floatingPieces } from './pieces.js';
 import { findWallPatches } from './planes.js';
 import { BRACE, buildProps, crestOn, crestPart, noProps, PROP } from './prop.js';
@@ -99,6 +101,7 @@ export function applyTunables(t = {}) {
   if (['auto', 'light', 'sure', 'custom'].includes(t.padStyle)) PAD.style = t.padStyle;
   if (t.padCustom) for (const k of Object.keys(PAD.custom)) set(PAD.custom, k, t.padCustom[k]);
   set(PROP, 'gap', t.propGap);
+  if (Number.isFinite(t.sideClearance)) PROP.sideClear = Math.max(0.2, Math.min(1, t.sideClearance));   // welds() refuses closer anyway
   if (Number.isFinite(t.tineContactOffset)) PROP.tineContactOffset = Math.max(-0.2, Math.min(0.2, t.tineContactOffset));
   if (Number.isFinite(t.tallRibsHeight) && t.tallRibsHeight > 0) {
     BRACE.tallH = Math.min(2000, Math.max(1, t.tallRibsHeight));
@@ -121,6 +124,7 @@ export function applyTunables(t = {}) {
     PROP.tineDir = t.tineDir;
     PROP.footGap = t.tineDir === 'vertical' ? 0 : FOOT_GAP;
   }
+  if (Number.isFinite(t.bottomGap) && PROP.tineDir !== 'vertical') PROP.footGap = Math.max(0, Math.min(0.4, t.bottomGap));
   if (Number.isFinite(t.pinDepth)) PROP.pinDepth = Math.max(0.05, Math.min(PROP.pinDepthMax, t.pinDepth));
   // And the nozzle and wall lines, which scale the support widths (nozzle.js).
   if (t.nozzle !== undefined) applyNozzle(t.nozzle);
@@ -153,6 +157,7 @@ export function buildFins(topo, result, rot, opts = {}) {
   // Tall walls get face ribs, last, around everything placed (fins/tall.js). Draw
   // ribs its own walls on the page (draw.js braceTall).
   if (opts.mode !== 'draw' && opts.tallRibs !== false) braceTallWalls(topo, result, rot, built);
+  if (opts.turning && opts.mode !== 'draw') turnBuilt(topo, result, rot, built, opts.turning);
   crestPart(null);   // the crest's part is only for this build (a Worker keeps no mesh)
   forgetSeated(topo);   // nor the seated part: a page building inline would hold it
   // A piece of the part that starts in mid-air (a cut clean through, a loose
@@ -248,7 +253,7 @@ function withFill(topo, result, rot, opts, auto) {
     fill: { walls: f.stats.walls, rows: f.stats.rows ?? 0, rowsLost: f.stats.rowsLost ?? 0, rowBuilds: f.stats.rowBuilds ?? 0, joined: f.stats.joined ?? 0, ribs: f.stats.ribs, ties: f.stats.ties, tries: f.stats.tries, checks: f.stats.checks, capped: f.stats.capped, refused: f.stats.refused,
             bareBefore: f.stats.startArea, unservedArea: f.unserved.area, unservedPts: f.unserved.pts,
             islands: islands.length, islandsBare: f.unserved.islands ?? 0, islandPts: f.unserved.islandPts ?? [],
-            islandsCapped: !!f.stats.islandsCapped },
+            islandsCapped: !!f.stats.islandsCapped, ...(f.stats.stopped ? { stopped: true } : {}) },
   };
 }
 
@@ -334,7 +339,7 @@ function buildFinsCore(topo, result, rot, opts = {}) {
       for (const v of w.triangles) wedgeTris.push(v);
       for (const wd of w.wedges) {
         wedgeRecs.push({ triRange: [wd.triRange[0] + off, wd.triRange[1] + off],
-                         line: wd.line, height: wd.height, span: wd.span });
+                         line: wd.line, height: wd.height, span: wd.span, tines: wd.tines ?? 0 });
       }
       wedgeTines += w.tines; wedgedPatches++;
     }
@@ -359,13 +364,15 @@ function buildFinsCore(topo, result, rot, opts = {}) {
     const fins = base.props.map((q, i) => ({
       ...(base.fins[i] ?? {}),                     // existing stats (height/length/tines/...)
       id: q.id ?? i, kind: 'prop',
+      tines: q.tines ?? 0,                         // the prop's own count; base.fins[i] carries 0 (#037)
       triRanges: q.triRanges ?? [],
       line: q.line, span: q.span, height: q.height,
+      ...(q.turnWall ? { turnWall: q.turnWall } : {}),
     }));
     let wid = fins.length;
     for (const wd of wedgeRecs) {
       fins.push({
-        height: wd.height, length: wd.span, tines: 0, rows: 0, stilt: 0, lean: 0, bearing: 0, site: null,
+        height: wd.height, length: wd.span, tines: wd.tines ?? 0, rows: 0, stilt: 0, lean: 0, bearing: 0, site: null,
         id: wid++, kind: 'wedge',
         triRanges: [[wd.triRange[0] + baseLen, wd.triRange[1] + baseLen]],
         line: wd.line, span: wd.span,
@@ -402,7 +409,10 @@ function buildFinsCore(topo, result, rot, opts = {}) {
     // on a point-seated part with the pad off, which gets no walls at all (above).
     // (`lastResort: false` is the tests' Auto baseline switch; it doesn't turn the fill off)
     const noWalls = base.seating?.kind === 'point' && !base.pad;
-    if (mode === 'full' && !noWalls) return withFill(topo, result, rot, { ...opts, tines: withTines, coverage }, auto);
+    if (mode === 'full' && !noWalls) {
+      opts.progress?.auto(auto.triangles);      // a live build (fins/progress.js): Auto's walls are in
+      return withFill(topo, result, rot, { ...opts, tines: withTines, coverage }, auto);
+    }
     // Curved walls in Auto (prop/curved.js): a forced curve can leave overhang the
     // straight walls held, so the fill pass runs under the regions a curve won --
     // there only, rows off. Its numbers are its own (`curvedFill`): the readout's Full
@@ -449,6 +459,7 @@ function buildFinsCore(topo, result, rot, opts = {}) {
       stilt: 0, lean: 0, bearing: 0, site: null,
       id: q.id, kind: q.kind ?? 'prop',
       triRanges: q.triRanges ?? [], line: q.line, span: q.span,
+      ...(q.turnWall ? { turnWall: q.turnWall } : {}),
     })),
     props: built.props,
     volume: built.volume,

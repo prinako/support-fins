@@ -15,6 +15,7 @@ import { WEB, MODELS, assert, assertClose, block, readSTL, buildTopology, analyz
 
 const { writeThreeMF, writePlate3MF, readThreeMF, mergeColors } = await import(`${WEB}threemf.js`);
 const { zipStore, unzip } = await import(`${WEB}zip.js`);
+const { wholeCode, fillUnpainted } = await import(`${WEB}paintcode.js`);
 
 const REL = 'http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel';
 
@@ -71,7 +72,7 @@ const readXML = async (opts) => readThreeMF(await pack(modelXML(opts)));
 
 Deno.test('3MF round trip: our own export reads back as the same geometry', async () => {
   const fins = CUBE.map((p) => [p[0], p[1], p[2] + 1]);   // a second body on top
-  const blob = writeThreeMF(CUBE, fins, 'test part');
+  const blob = await writeThreeMF(CUBE, fins, 'test part');
   const r = await readThreeMF(new Uint8Array(await blob.arrayBuffer()));
 
   assert(r.positions.length === (CUBE.length + fins.length) * 3,
@@ -90,10 +91,10 @@ Deno.test('3MF round trip: our own export reads back as the same geometry', asyn
 // positions, so both carry ONE transform that puts the pair on the bed, in register.
 Deno.test('3MF separate export: two objects, one shared transform, in register and on the bed', async () => {
   const part = CUBE.map((p) => [p[0] * 20 - 10, p[1] * 10 - 5, p[2] * 8]);   // centred on the origin, like print space
-  const fins = CUBE.map((p) => [p[0] * 2 - 1, p[1] * 2 - 1, p[2] * 8 + 8]);
-  const blob = writeThreeMF(part, fins, 'test part', { separate: true });
+  const fins = CUBE.map((p) => [p[0] * 2 - 1, p[1] * 2 - 1, p[2] * 16]);           // on the plate (strandedFrom)
+  const blob = await writeThreeMF(part, fins, 'test part', { separate: true });
   const bytes = new Uint8Array(await blob.arrayBuffer());
-  const xml = new TextDecoder().decode(bytes);
+  const xml = new TextDecoder().decode((await unzip(bytes)).get('3D/3dmodel.model'));
   const items = [...xml.matchAll(/<item objectid="(\d+)" transform="([^"]+)"\/>/g)];
   assert(items.length === 2, `${items.length} build items, want 2 (part, supports)`);
   assert(items[0][2] === items[1][2], `transforms differ: ${items[0][2]} vs ${items[1][2]}`);
@@ -113,15 +114,73 @@ Deno.test('3MF separate export: two objects, one shared transform, in register a
 
 Deno.test('3MF separate export: a footprint wider than the bed centre starts 5 mm in', async () => {
   const part = CUBE.map((p) => [p[0] * 240 - 120, p[1] * 10, p[2]]);
-  const blob = writeThreeMF(part, CUBE, 'wide', { separate: true });
+  const blob = await writeThreeMF(part, CUBE, 'wide', { separate: true });
   const r = await readThreeMF(new Uint8Array(await blob.arrayBuffer()));
   const { lo } = bounds(r.positions);
   assertClose(lo[0], 5, 1e-6, 'x min');
 });
 
+// GitHub #476: Bambu, Orca and its forks check each object alone -- its first layer
+// must print, and no layer between its bottom and top may be empty. Supports that
+// would break that join the part object as a part of their own (write.js strandedFrom).
+const modelOf = async (blob) => new TextDecoder().decode((await unzip(new Uint8Array(await blob.arrayBuffer()))).get('3D/3dmodel.model'));
+const zSpan = (xml, name) => {
+  const m = xml.match(new RegExp(`<object id="\\d+" type="model" name="${name}">(<mesh>.*?</mesh>)`, 's'));
+  if (!m) return null;
+  const zs = [...m[1].matchAll(/ z="([^"]+)"/g)].map((v) => +v[1]);
+  return [Math.min(...zs), Math.max(...zs)];
+};
+
+Deno.test('3MF separate export: supports above a gap join the part object (#476)', async () => {
+  const part = CUBE.map((p) => [p[0] * 20 - 10, p[1] * 10 - 5, p[2] * 30]);
+  const plate = CUBE.map((p) => [p[0] * 2 - 8, p[1] - 0.5, p[2] * 3.6]);          // a wall on the plate, z 0-3.6
+  const high = CUBE.map((p) => [p[0] * 2 + 4, p[1] - 0.5, p[2] * 10 + 14.8]);     // a wall on the part, z 14.8-24.8
+  const xml = await modelOf(await writeThreeMF(part, [...plate, ...high], 'stand', { separate: true }));
+  const sup = zSpan(xml, 'stand supports'), on = zSpan(xml, 'stand supports on part');
+  assert(sup && sup[0] === 0 && sup[1] === 3.6, `supports object z ${sup}, want 0..3.6`);
+  assert(on && on[0] === 14.8, `the high wall should be a part of the part object, z ${on}`);
+  assert(/<component objectid="\d+"\/>/.test(xml) && (xml.match(/<item /g) ?? []).length === 2,
+    'two items: the part (now an assembly with the high wall) and the supports');
+  const cfg = new TextDecoder().decode((await unzip(new Uint8Array(await (await writeThreeMF(part, [...plate, ...high], 'stand', { separate: true })).arrayBuffer()))).get('Metadata/model_settings.config'));
+  assert(/subtype="normal_part"><metadata key="name" value="stand supports on part"/.test(cfg), 'Bambu/Orca config names it a normal part');
+  // read back (re-opening our own export): the part is the part, without the wall
+  const r = await readThreeMF(new Uint8Array(await (await writeThreeMF(part, [...plate, ...high], 'stand', { separate: true })).arrayBuffer()));
+  const own = r.objects.find((o) => o.name === 'stand');
+  assert(own && own.positions.length === part.length * 3, `the part read back has ${own?.positions.length / 9} triangles, want ${part.length / 3}`);
+});
+
+Deno.test('3MF separate export: supports that start above the plate (a wall in a bore) all join the part (#476)', async () => {
+  const part = CUBE.map((p) => [p[0] * 20 - 10, p[1] * 10 - 5, p[2] * 20]);
+  const bore = CUBE.map((p) => [p[0] * 2 - 1, p[1] - 0.5, p[2] * 10 + 3.2]);
+  const xml = await modelOf(await writeThreeMF(part, bore, 'bore', { separate: true }));
+  assert(!zSpan(xml, 'bore supports'), 'no supports object of its own');
+  assert(zSpan(xml, 'bore supports on part')?.[0] === 3.2, 'the bore wall is a part of the part object');
+  assert((xml.match(/<item /g) ?? []).length === 1, 'one build item');
+});
+
+Deno.test('3MF separate export: supports with no gap stay their own object, unchanged (#476)', async () => {
+  const part = CUBE.map((p) => [p[0] * 20 - 10, p[1] * 10 - 5, p[2] * 20]);
+  const a = CUBE.map((p) => [p[0] * 2 - 8, p[1] - 0.5, p[2] * 10]);              // z 0-10
+  const b = CUBE.map((p) => [p[0] * 2 + 4, p[1] - 0.5, p[2] * 8 + 10.05]);       // z 10.05-18.05: under STRAND_GAP
+  const xml = await modelOf(await writeThreeMF(part, [...a, ...b], 'ok', { separate: true }));
+  assert(!xml.includes('on part') && !xml.includes('<components>'), 'nothing moved, no assembly');
+  assert(zSpan(xml, 'ok supports')?.[1] === 18.05, 'both walls in the supports object');
+});
+
+Deno.test('3MF separate export: the interface crest above a gap goes with its walls (#476)', async () => {
+  const part = CUBE.map((p) => [p[0] * 20 - 10, p[1] * 10 - 5, p[2] * 30]);
+  const plate = CUBE.map((p) => [p[0] * 2 - 8, p[1] - 0.5, p[2] * 3.6]);
+  const high = CUBE.map((p) => [p[0] * 2 + 4, p[1] - 0.5, p[2] * 10 + 14.8]);
+  const crestLow = CUBE.map((p) => [p[0] * 2 - 8, p[1] - 0.5, p[2] * 0.2 + 3.6]);
+  const crestHigh = CUBE.map((p) => [p[0] * 2 + 4, p[1] - 0.5, p[2] * 0.2 + 24.8]);
+  const xml = await modelOf(await writeThreeMF(part, [...plate, ...high], 'c', { separate: true, iface: [...crestLow, ...crestHigh] }));
+  assert(zSpan(xml, 'c interface')?.[1] === 3.8, 'the low crest stays the supports object\'s interface');
+  assert(zSpan(xml, 'c interface on part')?.[0] === 24.8, 'the high crest is a part of the part object');
+});
+
 Deno.test('3MF separate export with no fins is the part alone', async () => {
-  const blob = writeThreeMF(CUBE, [], 'bare', { separate: true });
-  const xml = new TextDecoder().decode(new Uint8Array(await blob.arrayBuffer()));
+  const blob = await writeThreeMF(CUBE, [], 'bare', { separate: true });
+  const xml = new TextDecoder().decode((await unzip(new Uint8Array(await blob.arrayBuffer()))).get('3D/3dmodel.model'));
   assert((xml.match(/<item /g) ?? []).length === 1, 'one build item');
 });
 
@@ -511,7 +570,7 @@ Deno.test('3MF Bambu modifier, blocker and enforcer each keep their kind', async
 });
 
 /** A PrusaSlicer object: ONE mesh of three triangles, its volumes as triangle ranges. */
-async function prusaVolumes(volumes, triAttr = '') {
+async function prusaVolumes(volumes, triAttr = '', objMeta = '') {
   const verts = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [5, 0, 0], [6, 0, 0], [5, 1, 0], [9, 0, 0], [10, 0, 0], [9, 1, 0]]
     .map((p) => `<vertex x="${p[0]}" y="${p[1]}" z="${p[2]}"/>`).join('');
   const tris = [0, 3, 6].map((v, i) => `<triangle v1="${v}" v2="${v + 1}" v3="${v + 2}"${i === 2 ? triAttr : ''}/>`).join('');
@@ -519,7 +578,7 @@ async function prusaVolumes(volumes, triAttr = '') {
     + `<resources><object id="1" type="model"><mesh><vertices>${verts}</vertices><triangles>${tris}</triangles></mesh></object>`
     + '</resources><build><item objectid="1"/></build></model>';
   const config = '<?xml version="1.0"?><config><object id="1" instances_count="1">'
-    + '<metadata type="object" key="name" value="bracket.stl"/>'
+    + '<metadata type="object" key="name" value="bracket.stl"/>' + objMeta
     + volumes.map(([first, last, meta]) => `<volume firstid="${first}" lastid="${last}">${meta}</volume>`).join('')
     + '</object></config>';
   return readThreeMF(await packParts([
@@ -655,7 +714,7 @@ for (const [file, name] of [['bambu.3mf', 'Generic-Cube'], ['orca.3mf', 'Generic
 
 /** Write `extras` beside a 1 mm cube with a block of supports, read it back. */
 async function writeExtras(extras, { partTris = CUBE, colors = null, separate = true } = {}) {
-  const blob = writeThreeMF(partTris, triples(block(3, 4, 0, 1, 0, 1)), 'cube',
+  const blob = await writeThreeMF(partTris, triples(block(3, 4, 0, 1, 0, 1)), 'cube',
     { separate, colors, extras: extras.map((e) => ({ ...e, tris: triples(e.positions) })) });
   const bytes = new Uint8Array(await blob.arrayBuffer());
   return { r: await readThreeMF(bytes), parts: await unzip(bytes) };
@@ -730,7 +789,7 @@ Deno.test('3MF export: a PrusaSlicer 2 part goes back as triangle ranges of one 
 
 Deno.test('3MF export: with a colour table and the interface crest, every resource id is its own', async () => {
   const rgb = Array(12).fill('#FF0000');
-  const blob = writeThreeMF(CUBE, triples(block(3, 4, 0, 1, 0, 1)), 'cube', { separate: true,
+  const blob = await writeThreeMF(CUBE, triples(block(3, 4, 0, 1, 0, 1)), 'cube', { separate: true,
     colors: { paint: [], rgb }, iface: triples(block(3, 4, 0, 1, 1, 1.2)),
     extras: [NEG, MOD].map((e) => ({ ...e, tris: triples(e.positions) })) });
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -756,7 +815,7 @@ Deno.test('3MF export: the locked form writes no slicer parts (they would cut th
 const at = (tris, dx, dy = 0) => tris.map((p) => [p[0] + dx, p[1] + dy, p[2]]);
 const box = (x0, x1, y0, y1, z0, z1) => triples(block(x0, x1, y0, y1, z0, z1));
 async function writePlate(models, opts = { separate: true }) {
-  const bytes = new Uint8Array(await writePlate3MF(models, opts).arrayBuffer());
+  const bytes = new Uint8Array(await (await writePlate3MF(models, opts)).arrayBuffer());
   const parts = await unzip(bytes);
   return { r: await readThreeMF(bytes), parts, model: new TextDecoder().decode(parts.get('3D/3dmodel.model')) };
 }
@@ -769,7 +828,7 @@ function idsResolve(model) {
 }
 
 Deno.test('plate 3MF: two models, each its part and supports, one shared shift, as they stood', async () => {
-  const a = { partTris: box(-40, -30, -5, 5, 0, 8), finTris: box(-36, -34, -1, 1, 8, 10), name: 'a' };
+  const a = { partTris: box(-40, -30, -5, 5, 0, 8), finTris: box(-36, -34, -1, 1, 0, 10), name: 'a' };
   const b = { partTris: box(20, 30, 10, 20, 0, 5), finTris: [], name: 'b' };
   const { r, model } = await writePlate([a, b]);
   const items = [...model.matchAll(/<item objectid="(\d+)" transform="([^"]+)"\/>/g)];
@@ -786,7 +845,7 @@ Deno.test('plate 3MF: two models, each its part and supports, one shared shift, 
 });
 
 Deno.test('plate 3MF on a known bed: each model where it stands on it, a lone one too', async () => {
-  const a = { partTris: box(-40, -30, -5, 5, 0, 8), finTris: box(-36, -34, -1, 1, 8, 10), name: 'a' };
+  const a = { partTris: box(-40, -30, -5, 5, 0, 8), finTris: box(-36, -34, -1, 1, 0, 10), name: 'a' };
   const b = { partTris: box(20, 30, 10, 20, 0, 5), finTris: [], name: 'b' };
   const bed = { x: 250, y: 210 };
   const { r } = await writePlate([a, b], { separate: true, bed });
@@ -884,7 +943,10 @@ Deno.test('plate 3MF: PrusaSlicer paint on the second model alone still declares
 
 // One model writes the bytes it did before writePlate3MF (sha-256 of origin/main's
 // output for each): a change to the one-model file shows here, not just in the
-// structure the tests above read back.
+// structure the tests above read back. The hashes are of the STORED file (what
+// origin/main wrote, before the 3MF was deflated): a deflated file's bytes depend on the
+// runtime's zlib, so it is written with CompressionStream off for the hash, and the
+// deflated file must then hold the very same entries.
 Deno.test('3MF one-model output is unchanged (golden)', async () => {
   const FINS = box(3, 4, 0, 1, 0, 1);
   const neg = { ...NEG, tris: triples(NEG.positions) };
@@ -898,9 +960,20 @@ Deno.test('3MF one-model output is unchanged (golden)', async () => {
       colors: { paint: [{ name: 'slic3rpe:mmu_segmentation', v: '8' }], rgb: [] } }, '6eb7e99f0dad0e54699ce5083007f47c5f16f3cf3a2d7cbb5596060deaa57fd9'],
   };
   for (const [k, [part, fins, name, opts, want]] of Object.entries(cases)) {
-    const d = new Uint8Array(await crypto.subtle.digest('SHA-256', await writeThreeMF(part, fins, name, opts).arrayBuffer()));
+    const deflated = new Uint8Array(await (await writeThreeMF(part, fins, name, opts)).arrayBuffer());
+    const saved = globalThis.CompressionStream;
+    let stored;
+    try {
+      globalThis.CompressionStream = undefined;
+      stored = new Uint8Array(await (await writeThreeMF(part, fins, name, opts)).arrayBuffer());
+    } finally { globalThis.CompressionStream = saved; }
+    const d = new Uint8Array(await crypto.subtle.digest('SHA-256', stored));
     const got = [...d].map((b) => b.toString(16).padStart(2, '0')).join('');
     assert(got === want, `${k}: the one-model file changed (${got})`);
+    const a = await unzip(deflated), b = await unzip(stored);
+    assert([...a.keys()].join() === [...b.keys()].join() && [...a].every(([n, v]) => v.length === b.get(n).length && v.every((x, i) => x === b.get(n)[i])),
+      `${k}: the deflated file holds different entries`);
+    assert(deflated.length < stored.length, `${k}: deflated ${deflated.length} bytes, stored ${stored.length}`);
   }
 });
 
@@ -986,7 +1059,7 @@ function colouredCube(attr, { ns = '', resources = '', objAttrs = '' } = {}) {
 /** Write `partTris` + a fin with `colors`, read it back; also the model XML. */
 async function roundTrip(partTris, colors) {
   const fin = [[3, 0, 0], [4, 0, 0], [3, 1, 0]];
-  const blob = writeThreeMF(partTris, fin, 'painted', { separate: true, colors });
+  const blob = await writeThreeMF(partTris, fin, 'painted', { separate: true, colors });
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const xml = new TextDecoder().decode((await unzip(bytes)).get('3D/3dmodel.model'));
   return { r: await readThreeMF(bytes), xml };
@@ -1088,6 +1161,132 @@ Deno.test('3MF colours: merged objects keep their colours at the right offsets',
   assert(mergeColors([b]) === null, 'no colours should merge to null');
 });
 
+// --- filaments as paint ------------------------------------------------------
+// A part coloured by FILAMENT (the slicer's object/part setting, not paint) goes
+// out painted with it: the export's one object has no config to carry it.
+
+Deno.test('paint codes: a whole triangle per filament, and a painted one keeps its strokes', () => {
+  assert([1, 2, 3, 4, 18].map(wholeCode).join() === '4,8,0C,1C,FC', `whole codes ${[1, 2, 3, 4, 18].map(wholeCode)}`);
+  assert(wholeCode(0) === null && wholeCode(19) === null, 'no code for state 0 or past the 4-bit range');
+  // split in two (bits 1,0 + special side 0,0): one child state 0, one filament 2
+  assert(fillUnpainted('801', 3) === '80C1', `filled ${fillUnpainted('801', 3)}`);
+  assert(fillUnpainted('8', 3) === '8' && fillUnpainted('1C', 2) === '1C', 'a code with no state 0 changed');
+  // two levels: a 2-way split whose first child is itself split, every leaf state 0
+  // nibbles (first first): 1000 root | 1000 child | 0000 0000 its leaves | 0000 leaf
+  // -> "00011"; each 0000 leaf becomes 0001 (filament 2) -> "88811"
+  assert(fillUnpainted('00011', 2) === '88811', `deep split ${fillUnpainted('00011', 2)}`);
+  // a split with no children, or junk: left alone by the caller
+  assert(fillUnpainted('1', 2) === null && fillUnpainted('Z4', 2) === null && fillUnpainted('04', 2) === null,
+    'an unparseable code came back as a code');
+});
+
+/** A Bambu object of two cube parts (part 2 at x 5) and a second object, with `config`. */
+async function bambuFilaments(config, paint = '') {
+  const cube = (id, attr = '') => colouredCube((i) => i === 0 ? attr : '')
+    .match(/<object[\s\S]*<\/object>/)[0].replace('id="1"', `id="${id}"`);
+  const objs = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + cube(1, paint) + cube(2) + cube(3) + '</resources></model>';
+  const root = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + '<object id="10" type="model"><components><component p:path="/3D/Objects/o.model" objectid="1"/>'
+    + '<component p:path="/3D/Objects/o.model" objectid="2" transform="1 0 0 0 1 0 0 0 1 5 0 0"/></components></object>'
+    + '<object id="20" type="model"><components><component p:path="/3D/Objects/o.model" objectid="3"/></components></object>'
+    + '</resources><build><item objectid="10"/><item objectid="20"/></build></model>';
+  return readThreeMF(await packParts([
+    { name: '3D/3dmodel.model', data: root },
+    { name: '3D/Objects/o.model', data: objs },
+    { name: 'Metadata/model_settings.config', data: `<?xml version="1.0"?><config>${config}</config>` },
+  ]));
+}
+
+Deno.test('3MF filaments: a Bambu part and object on their own filaments go out painted with them', async () => {
+  const r = await bambuFilaments('<object id="10"><metadata key="extruder" value="1"/>'
+    + '<part id="1" subtype="normal_part"><metadata key="name" value="body"/></part>'
+    + '<part id="2" subtype="normal_part"><metadata key="extruder" value="2"/></part></object>'
+    + '<object id="20"><metadata key="extruder" value="3"/><part id="3" subtype="normal_part"/></object>');
+  const [two, solo] = r.objects;
+  const p = two.colors?.paint ?? [];
+  assert(p.slice(0, TRIS).every((x) => !x), 'the part on filament 1 got painted');
+  assert(p.slice(TRIS).filter((x) => x?.name === 'paint_color' && x.v === '8').length === TRIS, 'part 2 not on filament 2');
+  assert(solo.colors?.paint.filter((x) => x?.v === '0C').length === TRIS, 'the object on filament 3 lost it');
+  // and out through the export, on the same triangles
+  const { r: back } = await roundTrip(triples(two.positions), two.colors);
+  assert(back.objects[0].colors.paint.filter((x) => x?.v === '8').length === TRIS, 'filament 2 lost in the export');
+});
+
+Deno.test('3MF filaments: a painted triangle on filament 2 keeps its strokes, its own regions on 2', async () => {
+  const r = await bambuFilaments('<object id="10"><metadata key="extruder" value="2"/>'
+    + '<part id="1" subtype="normal_part"/><part id="2" subtype="normal_part"/></object>', ' paint_color="801"');
+  const p = r.objects[0].colors.paint;
+  // '801' is a state-0 half and a filament-2 half: both halves now 2
+  assert(p[0]?.v === '881', `painted triangle ${p[0]?.v}, want 881`);
+  assert(p.filter((x) => x?.v === '8').length === 2 * TRIS - 1, 'the unpainted triangles are not on filament 2');
+});
+
+Deno.test('3MF filaments: a modifier\'s filament paints nothing and stays its setting', async () => {
+  const o = (await bambuParts({ subtype: 'modifier_part' })).objects[0];
+  assert(!o.colors, 'a plain part read colours');
+  const r = await bambuFilaments('<object id="10"><part id="2" subtype="modifier_part">'
+    + '<metadata key="extruder" value="2"/></part></object>');
+  const m = r.objects[0];
+  assert(!m.colors && JSON.stringify(m.extras[0]?.settings) === '{"bambu":[["extruder","2"]]}',
+    `colours ${JSON.stringify(m.colors)}, settings ${JSON.stringify(m.extras[0]?.settings)}`);
+});
+
+Deno.test('3MF filaments: PrusaSlicer 2 object and volume filaments, as mmu_segmentation', async () => {
+  const r = await prusaVolumes([[0, 0, vtype('ModelPart')], [1, 1, vtype('ModelPart') + '<metadata type="volume" key="extruder" value="4"/>'],
+    [2, 2, vtype('ModelPart')]]);
+  const p = r.objects[0].colors?.paint ?? [];
+  assert(!p[0] && p[1]?.name === 'slic3rpe:mmu_segmentation' && p[1].v === '1C' && !p[2], `paint ${JSON.stringify(p)}`);
+  const { xml } = await roundTrip(triples(r.objects[0].positions), r.objects[0].colors);
+  assert(xml.includes('xmlns:slic3rpe') && xml.includes('slic3rpe:mmu_segmentation="1C"'), 'not written as Prusa paint');
+  // the object's own filament for the volumes that do not say (0 = the object's)
+  const o = await prusaVolumes([[0, 0, vtype('ModelPart')], [1, 2, vtype('ModelPart') + '<metadata type="volume" key="extruder" value="0"/>']],
+    '', '<metadata type="object" key="extruder" value="3"/>');
+  const q = o.objects[0].colors?.paint ?? [];
+  assert([0, 1, 2].every((i) => q[i]?.v === '0C'), `object filament: ${JSON.stringify(q.map((x) => x?.v))}`);
+});
+
+Deno.test('3MF filaments: a PrusaSlicer 2 second instance (a wrapper object) keeps the object\'s filament', async () => {
+  const verts = [[0, 0, 0], [1, 0, 0], [0, 1, 0]].map((p) => `<vertex x="${p[0]}" y="${p[1]}" z="${p[2]}"/>`).join('');
+  const model = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>`
+    + `<object id="1" type="model"><mesh><vertices>${verts}</vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>`
+    + '<object id="2" type="model"><components><component objectid="1"/></components></object>'
+    + '</resources><build><item objectid="1"/><item objectid="2" transform="1 0 0 0 1 0 0 0 1 5 0 0"/></build></model>';
+  const config = '<?xml version="1.0"?><config><object id="1" instances_count="2">'
+    + '<metadata type="object" key="extruder" value="3"/><volume firstid="0" lastid="0"/></object></config>';
+  const r = await readThreeMF(await packParts([
+    { name: '3D/3dmodel.model', data: model },
+    { name: 'Metadata/Slic3r_PE_model.config', data: config },
+  ]));
+  assert(r.objects.length === 2 && r.objects.every((o) => o.colors?.paint[0]?.v === '0C'),
+    `instances ${JSON.stringify(r.objects.map((o) => o.colors?.paint[0]?.v))}`);
+});
+
+Deno.test('3MF filaments: an object on filament 2 paints its part, not its modifier', async () => {
+  const r = await bambuFilaments('<object id="10"><metadata key="extruder" value="2"/>'
+    + '<part id="1" subtype="normal_part"/><part id="2" subtype="modifier_part"><metadata key="sparse_infill_density" value="80%"/></part></object>');
+  const o = r.objects[0];
+  assert(o.colors?.paint.filter((x) => x?.v === '8').length === TRIS && o.tris === TRIS, `part paint ${o.colors?.paint.length}`);
+  assert(o.extras.length === 1 && JSON.stringify(o.extras[0].settings) === '{"bambu":[["sparse_infill_density","80%"]]}',
+    `modifier ${JSON.stringify(o.extras)}`);
+});
+
+Deno.test('3MF filaments: PrusaSlicer 3 object_settings / volume_settings extruder', async () => {
+  const json = { objects: [{ id: 10, object_settings: { extruder: 2 }, volumes: [
+    { id: 1, type: 'ModelPart', volume_settings: {} }, { id: 2, type: 'ModelPart', volume_settings: { extruder: 5 } }] }] };
+  const cube = (id) => colouredCube(() => '').match(/<object[\s\S]*<\/object>/)[0].replace('id="1"', `id="${id}"`);
+  const root = `<?xml version="1.0"?><model unit="millimeter" xmlns="${CORE_NS}"><resources>${cube(1)}${cube(2)}`
+    + '<object id="10" type="model"><components><component objectid="1"/><component objectid="2"/></components></object>'
+    + '</resources><build><item objectid="10"/></build></model>';
+  const r = await readThreeMF(await packParts([
+    { name: '3D/3dmodel.model', data: root },
+    { name: 'Metadata/PrusaSlicer3_project.json', data: JSON.stringify(json) },
+  ]));
+  const p = r.objects[0].colors?.paint ?? [];
+  assert(p.slice(0, TRIS).every((x) => x?.v === '8') && p.slice(TRIS).every((x) => x?.v === '2C')
+    && p.every((x) => x.name === 'slic3rpe:mmu_segmentation'), `paint ${JSON.stringify(p.map((x) => x?.v))}`);
+});
+
 // --- integration: a 3MF part drives the real overhang engine ---------------
 // The point of the reader is that a 3MF-loaded part behaves EXACTLY like the
 // same part loaded as STL through the actual analysis, not just that the bytes
@@ -1110,7 +1309,7 @@ Deno.test('INTEGRATION: a core 3MF part analyzes identically to the same STL', a
   const rot = rotX(40);
   const a = analyze(buildTopology(posAttr(stl)), 45, rot);
 
-  const blob = writeThreeMF(triples(stl), [], 'lbracket');
+  const blob = await writeThreeMF(triples(stl), [], 'lbracket');
   const r = await readThreeMF(new Uint8Array(await blob.arrayBuffer()));
   const b = analyze(buildTopology(posAttr(r.positions)), 45, rot);
 
@@ -1138,4 +1337,41 @@ Deno.test('INTEGRATION: a production-extension 3MF (mesh via p:path) analyzes id
   for (const k of ['x', 'y', 'z']) assertClose(b.size[k], a.size[k], 1e-3, `size ${k} via p:path`);
   assertClose(b.overArea, a.overArea, a.overArea * 1e-3 + 1e-4, 'overhang area via p:path');
   assert(b.regions.length === a.regions.length, `regions ${b.regions.length} vs STL's ${a.regions.length}`);
+});
+
+// #476 with a slicer's parts beside the part (review): a negative part cuts every part of
+// its object, so walls it reaches stay apart; elsewhere they join, and every config names them.
+const STAND = box(-10, 10, -5, 5, 0, 30);
+const PLATE_WALL = box(-8, -6, -0.5, 0.5, 0, 3.6), HIGH_WALL = box(4, 6, -0.5, 0.5, 14.8, 24.8);
+async function writeStrand(extras) {
+  const bytes = new Uint8Array(await (await writeThreeMF(STAND, [...PLATE_WALL, ...HIGH_WALL], 'stand',
+    { separate: true, extras: extras.map((e) => ({ ...e, tris: triples(e.positions) })) })).arrayBuffer());
+  const parts = await unzip(bytes), text = (n) => parts.get(n) && new TextDecoder().decode(parts.get(n));
+  return { r: await readThreeMF(bytes), model: text('3D/3dmodel.model'), text };
+}
+
+Deno.test('3MF separate export: a negative part reaching the stranded walls keeps them apart (#476)', async () => {
+  const { model } = await writeStrand([{ ...NEG, positions: block(3, 7, -1, 1, 14, 26) }]);
+  assert(!model.includes('on part'), 'the walls would be cut by the negative part: they stay in the supports object');
+  assertClose(zSpan(model, 'stand supports')?.[1], 24.8, 1e-4, 'the high wall is still in the supports object');
+});
+
+Deno.test('3MF separate export: stranded walls join beside a negative part elsewhere, in both configs (#476)', async () => {
+  const { model, text, r } = await writeStrand([{ ...NEG, positions: block(-9, -7, -1, 1, 26, 29) }]);
+  assertClose(zSpan(model, 'stand supports on part')?.[0], 14.8, 1e-4, 'the high wall joins the part');
+  assert(/subtype="negative_part"/.test(text('Metadata/model_settings.config'))
+    && /subtype="normal_part"><metadata key="name" value="stand supports on part"/.test(text('Metadata/model_settings.config')), 'Bambu config');
+  const p3 = JSON.parse(text('Metadata/PrusaSlicer3_project.json')).objects[0].volumes.map((v) => v.type);
+  assert(p3.join() === 'ModelPart,NegativeVolume,ModelPart', `PrusaSlicer 3 volumes ${p3}`);
+  const own = r.objects.find((o) => o.name === 'stand');
+  assert(own.positions.length === STAND.length * 3 && own.extras.length === 1 && own.extras[0].kind === 'negative',
+    'read back: the part, its negative part, not the moved wall');
+});
+
+Deno.test('3MF separate export, PrusaSlicer 2 layout: the stranded walls are a ModelPart range, left out on reading (#476)', async () => {
+  const { text, r } = await writeStrand([{ ...NEG, settings: { prusa2: [] }, positions: block(-9, -7, -1, 1, 26, 29) }]);
+  const cfg = text('Metadata/Slic3r_PE_model.config');
+  assert(/value="stand supports on part"\/><metadata type="volume" key="volume_type" value="ModelPart"/.test(cfg), 'a ModelPart range named for it');
+  const own = r.objects.find((o) => o.name === 'stand');
+  assert(own.positions.length === STAND.length * 3 && own.extras.length === 1, `read back ${own.positions.length / 9} part triangles, ${own.extras.length} extras`);
 });

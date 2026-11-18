@@ -16,7 +16,7 @@ they're also in `prototype/calibration/<name>/print/`.
 | Angle | which faces need support | Overhang slider (top bar) |
 | Gap | how close walls stand to the part | Printer ▸ Edit ▸ Support gap |
 | Grip | how many tines hold each wall | Tines ▸ Tine grip |
-| Span | how wide a bare stretch your printer bridges (tells us, for now) | More settings ▸ Wide-face coverage (Auto) |
+| Span | how far apart walls may sit under a wide face (not print-tested by us yet) | More settings ▸ Wide-face coverage (Auto) |
 | Pad | how the bed pad lets go | More settings ▸ Bed pad ▸ Custom ▸ Pad gap |
 | Cutouts | which holes your walls can have and still stand | Cutouts (below Tines) |
 | Bore | whether holes pull clean (no setting: tells us) | — |
@@ -59,10 +59,11 @@ all the way left, a quarter, the middle (the default), three quarters, all the w
 right. Snap the walls off and look at each shelf's underside between the walls, and
 tell us which shelves came out flat and which sagged.
 
-Don't set the slider from this one yet. Today the slider doesn't always add walls
-as it moves right: on this shelf the middle position leaves a wider bare stretch
-(17 mm) than all the way left (12 mm). We're fixing that. Your result tells us how wide a
-bare stretch your printer can bridge.
+The walls run from the bar out to the shelf's free edge. They sit about 14 mm apart on
+the 0% and 25% shelves, 10 mm apart on 50% and 75%, and 6 mm apart on 100%, so the five
+shelves show three spacings. Set **Wide-face coverage** to the lowest position whose
+shelf came out flat. This coupon has not been print-tested by us yet, so your result
+also tells us how wide a bare stretch a printer can bridge.
 
 ## Pad (`pad/print/pad-coupon.3mf`)
 Six cubes standing on an edge. A pad is all that holds each one down. Each pad stands
@@ -93,6 +94,11 @@ walls running across the hole instead. Pull every wall out of an open end (an X 
 slides out along the hole). Tell us which came out clean and which broke or stuck, and
 whether A or X left the smoother hole ceiling. That tells us how small a hole the tool
 should still support, and which way its walls should run.
+
+Every wall here stands inside its hole, above the plate, so the walls are a part of the
+block's object (`Bore coupon supports on part`), not an object of their own: OrcaSlicer
+and Bambu Studio refuse an object whose first layer is empty. The walls touch the hole,
+so your slicer may say the part has floating regions: that's expected, print it anyway.
 
 ## Sampler (`sampler/print/sampler-coupon.3mf`)
 One part with every hard shape at once, supported the way the site does it in

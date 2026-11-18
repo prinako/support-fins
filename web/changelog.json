@@ -1,0 +1,253 @@
+{
+  "about": "What's new on the landing card and the source of every GitHub Release. A PR that changes what a user sees, hears or downloads appends one entry to the END of unreleased. Never write or edit releases by hand: only the release step (stamp in web/changelog.js) does, moving every unreleased entry under the new version and rewriting the card in web/index.html; releases run oldest first. An entry: {pr (optional: the merged PR number), date, check, text (one line), highlights (optional: [{text, prs}], the lines the card lists in place of text)}. check is held, stays, clean or easy (all for a roll-up). The card shows released entries only, so unreleased ones never reach it.",
+  "releases": [
+    {
+      "version": "1.0.0",
+      "date": "2026-10-29",
+      "entries": [
+        {
+          "date": "2026-10-27",
+          "check": "all",
+          "text": "First tagged release: the ten biggest changes since launch.",
+          "highlights": [
+            {
+              "text": "Full coverage mode: every red overhang gets support, with a second pass for figures",
+              "prs": [
+                188,
+                189,
+                194
+              ]
+            },
+            {
+              "text": "Curved, downhill and arc walls that follow an overhang to the plate",
+              "prs": [
+                249,
+                256,
+                317,
+                396
+              ]
+            },
+            {
+              "text": "Cleaner snap-off: tines touch the part's surface instead of biting in, and the 3MF exports supports as their own object",
+              "prs": [
+                168,
+                199
+              ]
+            },
+            {
+              "text": "Plugins for Orca, Cura, Fusion, FreeCAD, Blender, SolidWorks, Rhino and PrusaSlicer, on the same engine as the site",
+              "prs": [
+                64,
+                130,
+                83,
+                144,
+                153,
+                185,
+                322,
+                163
+              ]
+            },
+            {
+              "text": "Calibrate menu: test prints that tune the fins to your printer",
+              "prs": [
+                162,
+                202
+              ]
+            },
+            {
+              "text": "Several models on one plate, with Move and Arrange",
+              "prs": [
+                326,
+                328,
+                343,
+                346
+              ]
+            },
+            {
+              "text": "Any nozzle from 0.2 to 2.0 mm, layers up to 0.6 mm, and thicker walls",
+              "prs": [
+                244,
+                245,
+                258,
+                261
+              ]
+            },
+            {
+              "text": "Resin: pins that snap at the surface and feet a scraper can get under",
+              "prs": [
+                311,
+                361,
+                363,
+                370
+              ]
+            },
+            {
+              "text": "Interface material for toolchanger printers",
+              "prs": [
+                205
+              ]
+            },
+            {
+              "text": "Works on phones, and in German, Dutch, Portuguese, Chinese and Arabic",
+              "prs": [
+                107,
+                238,
+                262,
+                306,
+                310,
+                374,
+                375,
+                376
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "version": "1.0.1",
+      "date": "2026-10-30",
+      "entries": [
+        {
+          "date": "2026-10-29",
+          "check": "held",
+          "text": "Support gently bent small tubes using their actual curved underside."
+        }
+      ]
+    },
+    {
+      "version": "1.0.2",
+      "date": "2026-11-03",
+      "entries": [
+        {
+          "date": "2026-10-29",
+          "check": "held",
+          "text": "Try longitudinal walls for isolated narrow struts left unsupported by the normal placement."
+        },
+        {
+          "date": "2026-10-30",
+          "check": "stays",
+          "text": "CLI preserved projects can bake negative parts for print-by-object, retaining exterior painting and part settings, with complete resume checkpoints and warnings to verify sliced materials and clearance."
+        },
+        {
+          "pr": 425,
+          "date": "2026-10-31",
+          "check": "held",
+          "text": "A brace placed by hand now follows a side that curves up its height, convex or concave, instead of only standing on flat spots."
+        },
+        {
+          "date": "2026-10-31",
+          "check": "held",
+          "text": "Anchor fins: a tool of its own for holding a leaning part from its up-facing back, curved or flat, without turning on Auto's sway braces. Sway braces go back to upright sides; a leaning back now takes an anchor."
+        },
+        {
+          "date": "2026-11-02",
+          "check": "stays",
+          "text": "Anchor fins can be short, down to 5 mm: click low on a side for a doorstop that keeps a tall part on a small base from tipping, with Brace depth up to 200%. From BorisKozo's Stabilizer (#426)."
+        }
+      ]
+    },
+    {
+      "version": "1.0.3",
+      "date": "2026-11-05",
+      "entries": [
+        {
+          "pr": 437,
+          "date": "2026-11-04",
+          "check": "easy",
+          "text": "Full coverage builds up to twice as fast on big or busy parts, with the same supports."
+        },
+        {
+          "pr": 438,
+          "date": "2026-11-04",
+          "check": "easy",
+          "text": "Full coverage builds live: walls appear as they're placed, a progress bar shows how far along it is, and Stop keeps what's shown."
+        }
+      ]
+    },
+    {
+      "version": "1.0.4",
+      "date": "2026-11-05",
+      "entries": [
+        {
+          "date": "2026-11-05",
+          "check": "easy",
+          "text": "Auto builds about a quarter faster on some tilted parts, with the same supports."
+        },
+        {
+          "date": "2026-11-05",
+          "check": "clean",
+          "text": "Full coverage no longer builds a wall through the part where its underside steps: the wall becomes two, one each side of the step, so it still breaks away cleanly. Draw mode asks for two lines there."
+        }
+      ]
+    },
+    {
+      "version": "1.0.5",
+      "date": "2026-11-06",
+      "entries": [
+        {
+          "date": "2026-11-05",
+          "check": "easy",
+          "text": "The Rotate buttons turn 45° a click instead of 90°, so leaning a part back is one click and 90° is two."
+        }
+      ]
+    },
+    {
+      "version": "1.0.6",
+      "date": "2026-11-10",
+      "entries": [
+        {
+          "date": "2026-11-06",
+          "check": "held",
+          "text": "A part centred on its axes no longer loses walls to a false \"inside the part\" reading at its centre, like a ball hanging inside a hollow ball."
+        },
+        {
+          "date": "2026-11-09",
+          "check": "stays",
+          "text": "Ribs on walls taller than the Brace tall walls height now rise to 85% of the wall instead of half, to stiffen the top, which wobbled on a test print. Those walls take a little more plastic; nothing else changes."
+        }
+      ]
+    },
+    {
+      "version": "1.0.7",
+      "date": "2026-11-18",
+      "entries": [
+        {
+          "date": "2026-11-10",
+          "check": "easy",
+          "text": "The 3MF you export is now compressed: about a sixth the size of before for the same model (a 70 MB part's file went from 102 MB to 17 MB). Nothing in the model changes, and Bambu Studio and PrusaSlicer open it as before."
+        },
+        {
+          "date": "2026-11-16",
+          "check": "easy",
+          "text": "Docker now runs nginx without root privileges. The container port changes from 80 to 8080; Compose still serves the app on host port 8731. Update custom port mappings, proxy targets and health checks when upgrading."
+        },
+        {
+          "date": "2026-11-16",
+          "check": "clean",
+          "text": "Independent side and bottom clearances for FDM walls standing on the model. Existing defaults stay the same.",
+          "pr": 416
+        },
+        {
+          "date": "2026-11-17",
+          "check": "easy",
+          "text": "Full coverage no longer builds a wall where nothing is overhead: a row beside the part used to stand in open air, holding nothing.",
+          "pr": 478
+        },
+        {
+          "date": "2026-11-17",
+          "check": "easy",
+          "text": "Exported 3MFs no longer fail in OrcaSlicer or Bambu Studio with \"empty layers\" when some walls stand on the part: those walls join the model's object. The Bore coupon slices as opened.",
+          "pr": 479
+        }
+      ]
+    }
+  ],
+  "unreleased": [
+    {
+      "date": "2026-11-18",
+      "check": "held",
+      "text": "The CLI can optionally turn eligible fins gradually below a roof in preserved print-by-layer projects, ending in a single top strip. Use --turn-fins, with --turn-angle for an explicit direction; ordinary output is unchanged."
+    }
+  ]
+}

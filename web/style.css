@@ -61,6 +61,10 @@ body.no-part #viewport canvas { pointer-events: none; }
   visibility: visible;
   transition: opacity 0.5s ease, visibility 0s;               /* show immediately, fade in */
 }
+/* Cancel: the one thing in it to click, and only under a fin build (ui/finbuild.js
+   .build) -- not reading a STEP, cutting negatives or an export's wait */
+#spinner .btn { display: none; pointer-events: auto; margin-left: 4px; }
+#spinner.build .btn { display: inline-block; }
 @media (prefers-reduced-motion: reduce) {
   #spinner, #spinner.show { transition: none; }
 }
@@ -72,6 +76,46 @@ body.no-part #viewport canvas { pointer-events: none; }
   animation: spin 0.7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* A live Full coverage build (ui/livebuild.js): under the plates row, out of the
+   part's way; the regions it locks (ui/lock.js) dim while it shows. */
+#live-build {
+  position: fixed;
+  top: calc(var(--topbar-h) + 44px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(420px, calc(100vw - 28px));
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+}
+#live-build[hidden] { display: none; }
+#live-label { flex: none; min-width: 11em; white-space: nowrap; }
+#live-bar-wrap { flex: 1; height: 6px; border-radius: 3px; background: var(--btn-line); overflow: hidden; }
+#live-bar { width: 0; height: 100%; background: var(--accent); transition: width 0.25s ease; }
+/* no message for a while (ui/livebuild.js kick): a light sweeps the bar -- working, not stuck */
+#live-bar-wrap { position: relative; }
+#live-bar-wrap.busy::after {
+  content: '';
+  position: absolute; top: 0; bottom: 0; left: 0;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: live-sweep 1.3s linear infinite;
+}
+@keyframes live-sweep { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) {
+  #live-bar { transition: none; }
+  #live-bar-wrap.busy::after { animation: none; left: 35%; }
+}
+body.live-shown [inert] { opacity: 0.45; transition: opacity 0.2s ease; }
 @media (prefers-reduced-motion: reduce) { #spinner .ring { animation-duration: 2.4s; } }
 
 /* ---------- top bar ---------- */
@@ -187,6 +231,7 @@ body.no-part #viewport canvas { pointer-events: none; }
   letter-spacing: .02em;
   margin-right: 4px;
 }
+.brand-ver { font-size: 10px; font-weight: 400; letter-spacing: 0; color: var(--dim); margin-left: 2px; }
 .brand-mark { height: 20px; width: auto; display: block; }
 
 .btn {
@@ -449,6 +494,7 @@ body.no-part #viewport canvas { pointer-events: none; }
 }
 .note:empty { display: none; }
 .note.good { color: #6fcf8b; }   /* the "you don't need me" all-clear */
+.note.warn { color: #ffb454; }   /* the Volume row's amber: too big for the build volume */
 
 /* The receipt: the "what did this get me" payoff. The exact grams are the
    headline; the saving is the reason to bother. Set apart from the plain stats
@@ -487,6 +533,16 @@ body.no-part #viewport canvas { pointer-events: none; }
   cursor: help;
 }
 #receipt .r-info:hover { color: var(--text); border-color: var(--dim); }
+
+/* "Something didn't get supported?" (ui/report.js): quiet links under the receipt,
+   there when wanted, never louder than the result above them. */
+.report-row { margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; }
+.report-row[hidden] { display: none; }
+.report-row .linkish {
+  padding: 0; border: 0; background: none; color: var(--dim);
+  font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.report-row .linkish:hover { color: var(--text); }
 
 /* The (i) on the Fins row: same opt-in-detail idea as the receipt's, for the
    how-it-works / how-to-fix text that reads as a wall when it's always on. */
@@ -715,6 +771,7 @@ body.no-part #viewport canvas { pointer-events: none; }
   font-size: 12px;
   appearance: textfield;          /* Scale: a step would be a whole reload */
 }
+.vb-pop .scale-axis .lbl { min-width: 1.2em; }
 .vb-pop input[type=number]::-webkit-inner-spin-button,
 .vb-pop input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .vb-pop .readout #rot-delta { color: var(--accent); margin-left: 8px; }
@@ -1088,10 +1145,32 @@ body.no-part #viewport canvas { pointer-events: none; }
                        font-size: 12px; color: var(--dim); }
 .err-panel .err-copy { flex: none; border: 1px solid var(--btn-line); background: var(--btn-hi); }
 .noscript { position: fixed; inset: 40% 16px auto; z-index: 10; text-align: center; color: var(--text); }
+/* "The 3D view can't draw" (ui/glfail.js): under the plate tabs (and the phone chip rows), above any panel. */
+.glfail { position: fixed; inset: calc(var(--topbar-h) + var(--chips-h, 0px) + 48px) 16px auto; z-index: 30;
+  max-width: 34em; margin: 0 auto; padding: 12px 16px; text-align: center;
+  color: var(--text); background: var(--panel); border: 1px solid var(--accent);
+  border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / 0.5); }
 .btn.gh { display: inline-flex; align-items: center; text-decoration: none; }
 .btn.gh svg { flex: none; }
 .btn.kofi { border-color: #ff8a5b; color: #ffb492; text-decoration: none; }
 .btn.kofi:hover { border-color: #ff8a5b; color: #06121f; background: #ff8a5b; }
+/* What's new: the card's changelog, written into index.html by web/changelog.js. The list
+   scrolls past about five lines so the card keeps its size as releases pile up. */
+#drop .whatsnew { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--dim); }
+#drop .whatsnew h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--text); }
+#drop .whatsnew .ver { color: var(--dim); font-weight: 400; }
+#drop .whatsnew .list {
+  max-height: 7.5em; overflow-y: auto; overscroll-behavior: contain; margin: 0 0 6px;
+  /* macOS hides the scrollbar: the last line fades so the list reads as more below */
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.5em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.5em), transparent);
+}
+#drop .whatsnew .list.end { -webkit-mask-image: none; mask-image: none; }
+#drop .whatsnew ul { margin: 0 0 4px; padding-left: 1.1em; }
+#drop .whatsnew li { margin-bottom: 2px; }
+#drop .whatsnew .rel { margin: 6px 0 2px; color: var(--text); font-weight: 600; }
+#drop .whatsnew .rel span { color: var(--dim); font-weight: 400; }
+#drop .whatsnew a { color: var(--accent); }
 #drop .kofi-line { margin: 14px 0 0; color: var(--dim); font-size: 12px; }
 #drop .kofi-line .kofi {
   pointer-events: auto;   /* the #drop scrim is click-through; the link must not be */

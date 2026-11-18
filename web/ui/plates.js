@@ -26,6 +26,7 @@ import { sectionPick } from './section.js';
 import { slot, liveXY, park, unpark, disposeSlot, select, takeLive, putBack } from './models.js';
 import { drawRow, pitch, plateAt, glide, frameAll } from './plateview.js';
 import { watchTaps } from './tap.js';
+import { uiLocked } from './lock.js';
 
 // One entry per plate: its model slots (models.js) and which of them is live -- or,
 // on a plate not being edited, which comes back live when it is -- and, kept when
@@ -293,11 +294,17 @@ export async function exportAll() {
   // switched plates meanwhile: the one left is judged as any other
   if (plates[active] !== at) return exportAll();
   const files = [], stale = [];
+  // each plate's geometry is read in one go (a switch of plate while the files are
+  // deflated must not change what is exported), then the 3MFs are written
+  const ready = [];
   plates.forEach((p, i) => {
     if (i === active ? !settled : !plateReady(p)) { stale.push(i); return; }
-    const f = plate3MF(plateGeometry(p));
-    if (f) files[i] = { name: `plate-${i + 1}-${f[1]}`, blob: f[0] };
+    ready.push([i, plateGeometry(p)]);
   });
+  for (const [i, gs] of ready) {
+    const f = await plate3MF(gs);
+    if (f) files[i] = { name: `plate-${i + 1}-${f[1]}`, blob: f[0] };
+  }
   if (stale.length) {
     const back = active;
     const ok = await locked(async () => {
@@ -337,7 +344,8 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   downAt = e.button === 0 ? [e.clientX, e.clientY] : null;
 });
 renderer.domElement.addEventListener('pointerup', (e) => {
-  if (!downAt || busy || (plates.length < 2 && plates[0].models.length < 2)) return;
+  // (a live Full build locks the plates: ui/lock.js)
+  if (!downAt || busy || uiLocked() || (plates.length < 2 && plates[0].models.length < 2)) return;
   downAt = null;
   if (!isTap(e)) return;
   const hit = plateAt(e, plates.length, active, [part, finMesh, padMesh, drawnMesh, ...sectionPick()]);

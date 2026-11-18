@@ -6,11 +6,13 @@
  *
  * Split out of prop.js, which re-exports the public names.
  */
-import { insidePart } from '../inside.js';
 import { faceAdjacency } from '../planes.js';
+import { flatRunAxis } from './bridge.js';
 import { PROP } from './config.js';
+import { endRows } from './endrows.js';
 import { contactLine, straightness } from './contact.js';
 import { surfaceZAt } from './surface.js';
+import { curvedTubeLine } from './tubecurve.js';
 
 /**
  * Split one overhang region into locally-straight sub-patches.
@@ -199,7 +201,11 @@ export function tubeLine(topo, faces, rot, pts, regionTris, step = PROP.stationS
     if (u > uHi) uHi = u;
   }
   if (uHi - uLo < 1e-6) return null;
-  if (small && !convexAbout(rn, regionTris, cx, cy, ux, uy)) return null;  // a pocket
+  if (small && !convexAbout(rn, regionTris, cx, cy, ux, uy)) {
+    // A gently bending tube's lowest line may leave the fitted axis. Test its
+    // actual cross-section minima before treating it as a concave pocket.
+    return curvedTubeLine(rn, regionTris, cx, cy, ux, uy, uLo, uHi, step);
+  }
   const nSt = Math.max(2, Math.min(400, Math.ceil((uHi - uLo) / step)));
 
   const lines = [];
@@ -319,7 +325,7 @@ function convexAbout(rn, regionTris, cx, cy, ux, uy) {
  * region's.
  */
 export function patchTracks(pts, patchTris, step = PROP.stationStep, support = null,
-                            span = PROP.maxUnsupportedSpan, axis = null) {
+                            span = PROP.maxUnsupportedSpan, axis = null, turn = true) {
   if (!pts.length) return [];
 
   // The 2x2 XY covariance of the patch, plus its cross-terms with Z. This used to
@@ -350,7 +356,7 @@ export function patchTracks(pts, patchTris, step = PROP.stationStep, support = n
   // 90deg down the long axis). The slope gradient, fitted from the same sums, is
   // robust and part-aligned -- so the walls run parallel to a real edge instead
   // of at an angle the part never suggested.
-  let ux, uy;
+  let ux, uy, turned = null;     // the old-rule axis, when the bridge turned this one
   if (axis) {
     [ux, uy] = axis;
   } else if (slope >= PROP.contourSlopeMin) {
@@ -360,61 +366,12 @@ export function patchTracks(pts, patchTris, step = PROP.stationStep, support = n
     // 15.7mm stub a level-contour run produced on the same messy region.
     ux = gx; uy = gy;
   } else {
-    // near-flat ledge: no slope to follow, so align to the longer world axis, the
-    // way a human draws a fin on a square face -- never a covariance diagonal.
-    let xLo = Infinity, xHi = -Infinity, yLo = Infinity, yHi = -Infinity;
-    for (const p of pts) {
-      if (p[0] < xLo) xLo = p[0]; if (p[0] > xHi) xHi = p[0];
-      if (p[1] < yLo) yLo = p[1]; if (p[1] > yHi) yHi = p[1];
-    }
-    let spanX = xHi - xLo, spanY = yHi - yLo;
-
-    // Run walls along the axis of the longer UNSUPPORTED span, not the longer
-    // face. A bridge ceiling is one flat square face whose ends rest on the two
-    // legs below it; the part that bridges is only the gap between them. Measured
-    // as the whole face the gap reads square, the tie picks the wrong axis, and
-    // the walls run ALONG the bridge (parallel to the layer lines they should be
-    // breaking up) instead of across it. So SCAN A GRID, mark every cell with
-    // solid part directly beneath as supported, and size each axis by its longest
-    // CONTIGUOUS free run (not the free bounding box, whose edges survive on the
-    // odd boundary cell insidePart reads as outside). With nothing below -- an
-    // ordinary bed overhang -- every cell is free and the runs equal the bbox, so
-    // this is the old longer-axis rule unchanged.
-    if (support && spanX > 0 && spanY > 0) {
-      const gstep = Math.max(1, step);
-      const nx = Math.min(80, Math.ceil(spanX / gstep));
-      const ny = Math.min(80, Math.ceil(spanY / gstep));
-      const grid = [];                                    // grid[i][j] = free?
-      for (let i = 0; i <= nx; i++) {
-        const x = xLo + (spanX * i) / nx;
-        const col = [];
-        for (let j = 0; j <= ny; j++) {
-          const y = yLo + (spanY * j) / ny;
-          const z = surfaceZAt(patchTris, x, y);
-          col.push(z !== null &&
-            !insidePart(support.topo, support.rot, support.offset, x, y, z - 0.1));
-        }
-        grid.push(col);
-      }
-      const dx = spanX / nx, dy = spanY / ny;
-      let runX = 0, runY = 0;
-      for (let j = 0; j <= ny; j++) {                     // longest free run along X
-        let run = 0;
-        for (let i = 0; i <= nx; i++) {
-          run = grid[i][j] ? run + 1 : 0;
-          if (run > runX) runX = run;
-        }
-      }
-      for (let i = 0; i <= nx; i++) {                     // longest free run along Y
-        let run = 0;
-        for (let j = 0; j <= ny; j++) {
-          run = grid[i][j] ? run + 1 : 0;
-          if (run > runY) runY = run;
-        }
-      }
-      if (runX > 0 && runY > 0) { spanX = runX * dx; spanY = runY * dy; }
-    }
-    if (spanX >= spanY) { ux = 1; uy = 0; } else { ux = 0; uy = 1; }
+    // near-flat ledge: no slope to follow, so cross the slicer's bridge lines
+    // (prop/bridge.js) -- axis-aligned, never a covariance diagonal.
+    // (`turn` false: the old pick, unraced -- the raster pass, see rasterTracks)
+    const a = flatRunAxis(pts, patchTris, step, support);
+    if (a.turned && !turn) [ux, uy] = a.old;
+    else { [ux, uy] = a; if (a.turned) turned = a.old; }
   }
   const un = Math.hypot(ux, uy); ux /= un; uy /= un;
   const vx = -uy, vy = ux;
@@ -426,7 +383,7 @@ export function patchTracks(pts, patchTris, step = PROP.stationStep, support = n
     if (u < uLo) uLo = u; if (u > uHi) uHi = u;
     if (t < vLo) vLo = t; if (t > vHi) vHi = t;
   }
-  if (uHi - uLo < 1e-6) return [];
+  if (uHi - uLo < 1e-6) return Object.assign([], { turned });
   const nSt = Math.max(2, Math.min(400, Math.ceil((uHi - uLo) / step)));
 
   const vExt = vHi - vLo;
@@ -436,10 +393,15 @@ export function patchTracks(pts, patchTris, step = PROP.stationStep, support = n
   // small part, so the clamp is gone and the caller warns (sagRisk) when the
   // resulting spacing actually exceeds the cap. Denser still only adds rows.
   const rowSpan = Math.max(1, span);
-  // (free-edge rows only under a near-flat underside -- see PROP.edgeFlatDeg)
-  const flat = slope <= Math.tan((PROP.edgeFlatDeg * Math.PI) / 180);
-  const rows = rowOffsets(vLo, vHi, rowSpan, support && flat && {
-    support, patchTris, ux, uy, vx, vy, uLo, uHi,
+  // Flush end rows at free edges are a candidate layout (prop/endrows.js): laid with
+  // `ends` true, offered (flagged `.flushable`, mid-strip rows kept) with 'offer' --
+  // buildProps races the two -- and withheld under Sway past its cutoff, where a
+  // flush wall stands where the braces go (Sway is the user's own ask, the judge
+  // doesn't see it).
+  const ends = !support?.sway || slope <= Math.tan((PROP.edgeFlatDegSway * Math.PI) / 180)
+    ? (support?.rowsOnly ? 'offer' : true) : false;
+  const rows = rowOffsets(vLo, vHi, rowSpan, support && {
+    support, patchTris, ux, uy, vx, vy, uLo, uHi, ends,
   });
 
   const tracks = [];
@@ -462,48 +424,33 @@ export function patchTracks(pts, patchTris, step = PROP.stationStep, support = n
   // compares it to the anti-sag cap to decide whether to warn: only a face wide
   // enough to want >1 row can actually sag, and only when its spacing exceeds cap.
   kept.spacing = rows.spacing;
+  kept.flushable = rows.flushable;
+  kept.turned = turned;          // walls turned across the bridge: raced (prop/bridgerace.js)
   return kept;
 }
 
 /**
  * Where the rows go across a patch (v, perpendicular to the walls), with the
- * widest gap between two rows as `.spacing` (0 for one row). The old layout puts
- * each row mid-strip (vExt / n apart, half that from each edge), which leaves a
- * lip of up to half a pitch past the last row; on a FREE edge (air past it, see
- * freeEdge) that lip is a cantilever, and on the slenderness coupon a 4 mm one
- * curled on every ledge. So the outermost row MOVES OUT to a free edge, flush
- * (PROP.edgeInset), and the rows spread evenly between the two ends: the same
- * number of walls. #143 added a row there instead and kept the old ones, which
- * doubled every free edge (lowledge 3 -> 5 walls, a cube at X20-30 3 -> 5, two
- * walls ~6 mm apart); Matthew 2026-10-01: same count, the end ones flush.
- * With no free edge, no part to probe, or a steep underside (`probe` null; see
- * PROP.edgeFlatDeg), the old layout exactly.
+ * widest gap between two rows as `.spacing` (0 for one row). The mid-strip layout
+ * puts each row vExt / n apart, half that from each edge; `probe.ends` says whether
+ * the free-edge candidate (endRows) replaces it (true), is only flagged (`.flushable`,
+ * 'offer': the race decides), or is off.
  */
 function rowOffsets(vLo, vHi, rowSpan, probe) {
-  const vExt = vHi - vLo, e = PROP.edgeInset;
+  const vExt = vHi - vLo;
   const n = Math.max(1, Math.round(vExt / rowSpan));
   let rows = Array.from({ length: n }, (_, w) => vLo + (vExt * (w + 0.5)) / n);
-  const near = 2 * e;                        // an old row this close already sits at the end
-  if (probe && vExt > 2 * near) {
-    const lo = rows[0] - vLo > near && freeEdge(probe, vLo, -1);
-    const hi = vHi - rows[n - 1] > near && freeEdge(probe, vHi, +1);
-    if (lo || hi) {
-      const a = lo ? vLo + e : rows[0], b = hi ? vHi - e : rows[n - 1];
-      // one row can't stand at an end without leaving the rest bare: it keeps its
-      // place mid-strip and the free ends get their own (as #143)
-      // Spread wider than both the old pitch and 2 x maxUnsupportedSpan (a point
-      // mid-gap out of a wall's reach), and the gap gets another row instead: two
-      // rows moved out to a 60 mm strip's ends left 59 mm bare (tshape X25 sparse).
-      const cap = Math.max(vExt / n, 2 * PROP.maxUnsupportedSpan);
-      const m = Math.max(n, Math.ceil((b - a) / cap - 1e-9) + 1);
-      rows = n === 1 ? [...(lo ? [a] : []), rows[0], ...(hi ? [b] : [])]
-        : Array.from({ length: m }, (_, w) => a + ((b - a) * w) / (m - 1));
-    }
+  let flushable = false;
+  if (probe?.ends) {
+    const flush = endRows(rows, vLo, vHi, probe);
+    if (flush && probe.ends === true) rows = flush;
+    else if (flush) flushable = true;
   }
-  if (probe) rows = lowEdgeRows(rows, lowEdges(probe, vLo, vHi), near);
+  if (probe) rows = lowEdgeRows(rows, lowEdges(probe, vLo, vHi), 2 * PROP.edgeInset);
   let widest = 0;
   for (let i = 1; i < rows.length; i++) widest = Math.max(widest, rows[i] - rows[i - 1]);
   rows.spacing = rows.length > 1 ? widest : 0;
+  rows.flushable = flushable;
   return rows;
 }
 
@@ -589,45 +536,4 @@ function lowEdgeRows(rows, edges, near) {
     if (!blocked) out.push(v);
   }
   return out.length === rows.length ? rows : out.sort((a, b) => a - b);
-}
-
-/**
- * Does the patch end in AIR along its edge at v = `vEdge` (`dir` -1 for the low
- * side, +1 for the high)? Probed at five points along the edge: the underside
- * just inside the edge gives the height, and a point 0.8 mm past the edge from
- * 2 mm below to 2 mm above that height is tested for part. Part there -- a spine
- * the ledge hangs off, the same overhang carrying on into the next sub-patch, or
- * an upright the underside meets -- makes the edge attached. Free only when most
- * probes that found an underside found air, and nothing stands in the column the
- * flush row would fill (either face, down to the bed).
- */
-function freeEdge(probe, vEdge, dir) {
-  const { support, patchTris, ux, uy, vx, vy, uLo, uHi } = probe;
-  let air = 0, part = 0;
-  for (const t of [0.1, 0.3, 0.5, 0.7, 0.9]) {
-    const u = uLo + (uHi - uLo) * t;
-    const at = (v) => [ux * u + vx * v, uy * u + vy * v];
-    const [ix, iy] = at(vEdge - dir * 0.3);
-    const z = surfaceZAt(patchTris, ix, iy);
-    if (z === null) continue;
-    // an edge down at the bed rests on it: no lip to curl, and a flush wall there
-    // is lower than any wall worth building (a cube at X20's low edge)
-    if (z < PROP.minHeightSquat) { part++; continue; }
-    const [ox, oy] = at(vEdge + dir * 0.8);
-    const solid = [-2, -1, -0.3, 0.3, 1, 2].some((dz) => insidePart(support.topo, support.rot, support.offset, ox, oy, z + dz));
-    if (solid) { part++; continue; }
-    // the flush row's whole column must be clear too: just outside its outer
-    // face, from the underside down to the bed (lbracket Y20: the side under the
-    // edge leans out, and a flush wall stood in it lower down)
-    // (both faces: a deck overhanging its leg by less than a wall stands the
-    // flush row against the leg -- bridge, sparse: blocked and buried)
-    for (const side of [+1, -1]) {
-      const [cx, cy] = at(vEdge - dir * PROP.edgeInset + side * dir * (PROP.th / 2 + PROP.sideClear));
-      for (let zz = z - 0.5; zz > 0.3; zz -= 1) {
-        if (insidePart(support.topo, support.rot, support.offset, cx, cy, zz)) return false;
-      }
-    }
-    air++;
-  }
-  return air >= 2 && air > part;
 }

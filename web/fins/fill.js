@@ -56,12 +56,14 @@
  * on every machine. Red no wall can reach is returned (`unserved`), never hidden:
  * quality first, surface the dropped overhang.
  */
-import { drawnLine, drawnWall, DRAW_MIN_LEN } from '../draw.js';
+import { drawnLine, DRAW_MIN_LEN } from '../draw.js';
 import { BRACE, braceWall, footFor, PART_BAND, PROP, surfaceHitsAt, TIE, tieWalls } from '../prop.js';
 import { classify, reachOf, PLATE_Z, MUST, touchesSmallHole } from './coverage.js';
 import { seatedPartTris } from './seating.js';
 import { headingField } from './field.js';
 import { rowWalls } from './rows.js';
+import { wallsAcrossCuts } from './stepsplit.js';
+import { heldCapture, keepTines, restoreTines } from './heldtines.js';
 
 export const FILL = {
   sample: 1.0,       // mm: leftover red is merged into points this far apart
@@ -229,8 +231,10 @@ function candidateLines(pts, group, R, bridge, narrow = false) {
     for (const s of FILL.shifts) { const v = line(bestAt + s); if (v) out.push(v); }
   }
   // all by the red they'd hold (stable: on a tie a direction's own line stays ahead of
-  // its shifts; between directions, the better direction's lines come first)
-  return out.sort((p, q) => q.weight - p.weight).concat(narrowOut.sort((p, q) => q.weight - p.weight));
+  // its shifts; between directions, the better direction's lines come first), each
+  // followed by its lines from an island start's end (lineAt's `ends`)
+  return out.sort((p, q) => q.weight - p.weight).concat(narrowOut.sort((p, q) => q.weight - p.weight))
+    .flatMap((c) => [c, ...(c.ends ?? [])]);
 }
 
 /** One candidate: the line along (ux, uy) at across-offset `off`, over the red within
@@ -247,7 +251,8 @@ function lineAt(pts, across, ux, uy, off, R, bridge, axis) {
   }
   if (!run) return null;
   let t0 = band[run.from][0], t1 = band[run.to][0];
-  if (t1 - t0 < DRAW_MIN_LEN + 0.5) { const m = (t0 + t1) / 2; t0 = m - (DRAW_MIN_LEN + 0.5) / 2; t1 = m + (DRAW_MIN_LEN + 0.5) / 2; }
+  const short = t1 - t0 < DRAW_MIN_LEN + 0.5, s0 = t0, s1 = t1;
+  if (short) { const m = (t0 + t1) / 2; t0 = m - (DRAW_MIN_LEN + 0.5) / 2; t1 = m + (DRAW_MIN_LEN + 0.5) / 2; }
   // z hint at each end: the red nearest that end
   const zAt = (t) => {
     let z = 0, bd = Infinity;
@@ -256,7 +261,14 @@ function lineAt(pts, across, ux, uy, off, R, bridge, axis) {
   };
   const at = (t) => [ux * t - uy * off, uy * t + ux * off, zAt(t)];
   const aims = band.slice(run.from, run.to + 1).map(([, i]) => i);
-  return { a: at(t0), b: at(t1), weight: run.w * (axis ? 1 : FILL.axisBias), aims };
+  const weight = run.w * (axis ? 1 : FILL.axisBias);
+  // an island start on a part's edge (an outside corner's tip): a line centred on it
+  // is half in air, too short to build; one from the start each way along the line
+  // keeps the side that runs up the part under it
+  const ends = short && aims.every((i) => pts[i].length > 4)
+    ? [[s0, s0 + DRAW_MIN_LEN + 0.5], [s1 - DRAW_MIN_LEN - 0.5, s1]].map(([u, v]) => ({ a: at(u), b: at(v), weight, aims }))
+    : null;
+  return { a: at(t0), b: at(t1), weight, aims, ends };
 }
 
 /**
@@ -427,7 +439,7 @@ const triBox = (t, i) => [Math.min(t[i][0], t[i + 1][0], t[i + 2][0]), Math.min(
   Math.max(t[i][1], t[i + 1][1], t[i + 2][1]), Math.max(t[i][2], t[i + 1][2], t[i + 2][2])];
 
 const BOX_EDGE = 2.0;    // mm: largest support-triangle box boxGrid works with (see boxesOf)
-const FLANGE_TOP = PROP.baseH + 0.05;   // mm: the plate flange's band, a hair over its top
+export const FLANGE_TOP = PROP.baseH + 0.05;   // mm: the plate flange's band, a hair over its top
 
 /**
  * fn(box) for pieces of triangle (a, b, c) no more than BOX_EDGE across: a long
@@ -452,8 +464,9 @@ function boxesOf(a, b, c, fn, depth = 0) {
 /** Every support triangle's box, gridded in plan AND height (a tall wall's boxes stack
  *  ~25 to a plan cell, and Auto's tines more: a plan-only grid made each check walk
  *  them all, ~0.3 s a wall on a 250k-face bust), so "does this new wall touch one" is cheap. */
-function boxGrid() {
+export function boxGrid() {
   const C = 3, CZ = 3, grid = new Map();
+  let stamp = 0;           // hits(): marks a stored box already gathered for this triangle
   // 13 bits a cell index (+-12 m at 3 mm); a collision past that only adds candidates
   const key = (i, j, k) => ((i + 4096) * 8192 + (j + 4096)) * 8192 + (k + 4096);
   const cellsOf = (b, pad, fn) => {
@@ -489,21 +502,39 @@ function boxGrid() {
     // `shared`: two pieces that both start in the flange band, either one wholly
     // within it (top at or under FLANGE_TOP), are the second pass's joined base, not
     // a hit -- a base on the part, above the band, never is
+    //
+    // Per new triangle, the stored boxes near it are gathered ONCE: those within `pad`
+    // of the whole triangle's box (each once, however many cells it sits in). A piece
+    // of the triangle lies inside that box, so no box left out could touch a piece:
+    // the answer is the same as testing every piece against every cell it reaches,
+    // which on a Full build re-read the same crowded cells ~36 times per triangle
+    // (Long walls rows: ~90% of the check's comparisons on the #50 Lissajous, profiled). A triangle
+    // with nothing near is not split at all.
     hits(tris, pad, shared = false, skip = null) {
-      let hit = false;
+      // `near` is refilled per triangle below, before `test` reads it
+      let hit = false, near = [];
       const test = (b) => {
         if (hit) return;
-        cellsOf(b, pad, (k) => {
-          if (hit) return;
-          for (const o of grid.get(k) || []) {
-            if (skip && skip(o.tag)) continue;
-            if (b[0] - pad <= o[3] && o[0] <= b[3] + pad && b[1] - pad <= o[4] && o[1] <= b[4] + pad &&
-                b[2] - pad <= o[5] && o[2] <= b[5] + pad && !(shared && Math.max(b[2], o[2]) <= FLANGE_TOP && Math.min(b[5], o[5]) <= FLANGE_TOP)) { hit = true; return; }
-          }
-        });
+        for (const o of near) {
+          if (b[0] - pad <= o[3] && o[0] <= b[3] + pad && b[1] - pad <= o[4] && o[1] <= b[4] + pad &&
+              b[2] - pad <= o[5] && o[2] <= b[5] + pad && !(shared && Math.max(b[2], o[2]) <= FLANGE_TOP && Math.min(b[5], o[5]) <= FLANGE_TOP)) { hit = true; return; }
+        }
       };
       // the new wall's triangles split the same way as the stored ones
-      for (let i = 0; i + 2 < tris.length && !hit; i += 3) boxesOf(tris[i], tris[i + 1], tris[i + 2], test);
+      for (let i = 0; i + 2 < tris.length && !hit; i += 3) {
+        const t = triBox(tris, i), seen = ++stamp;
+        near = [];
+        cellsOf(t, pad, (k) => {
+          for (const o of grid.get(k) || []) {
+            if (o.seen === seen) continue;
+            o.seen = seen;
+            if (skip && skip(o.tag)) continue;
+            if (t[0] - pad <= o[3] && o[0] <= t[3] + pad && t[1] - pad <= o[4] && o[1] <= t[4] + pad &&
+                t[2] - pad <= o[5] && o[2] <= t[5] + pad) near.push(o);
+          }
+        });
+        if (near.length) boxesOf(tris[i], tris[i + 1], tris[i + 2], test);
+      }
       return hit;
     },
   };
@@ -611,14 +642,17 @@ export function fillCoverage(topo, result, rot, opts, built) {
   if (opts.longWalls === false || (opts.coverage ?? 0.5) < FILL.sparseBelow) {
     return fillOnce(topo, result, rot, { ...opts, longWalls: false }, built);
   }
-  const plain = fillOnce(topo, result, rot, { ...opts, longWalls: false }, built);
-  if (!(plain.unserved.area > 0)) return plain;    // nothing left for rows to win
-  const rows = fillOnce(topo, result, rot, opts, built);
+  // (each build holds its tines out of the tests' tine capture; the kept one's go back)
+  const plainH = heldCapture(() => fillOnce(topo, result, rot, { ...opts, longWalls: false }, built));
+  const plain = plainH.value;
+  if (!(plain.unserved.area > 0)) return keepTines(plainH);    // nothing left for rows to win
+  const rowsH = heldCapture(() => fillOnce(topo, result, rot, opts, built));
+  const rows = rowsH.value;
   if (!rows.stats.rows || rows.unserved.area > plain.unserved.area + 1e-6) {
     plain.stats.rowsLost = rows.stats.rows ? rows.unserved.area - plain.unserved.area : 0;
-    return plain;
+    return keepTines(plainH);
   }
-  return rows;
+  return keepTines(rowsH);
 }
 
 /**
@@ -682,13 +716,18 @@ function fillOnce(topo, result, rot, opts, built) {
   const dead = new Set();          // points no line could serve
   const bare = (p) => !dead.has(p) && !held(p);
   let past = 0;                    // the island pass's budget past the caps (FILL.islandWalls)
-  const full = () => stats.walls >= FILL.maxWalls + past || stats.tries >= FILL.maxTries + 3 * past
-    || stats.checks >= FILL.maxChecks + 50 * past;
+  // Stop on a live build (fins/progress.js stopOpts): the walls shown, no more
+  const stopAt = opts.fillStopAt ?? Infinity;
+  const full = () => stats.walls >= stopAt || stats.walls >= FILL.maxWalls + past
+    || stats.tries >= FILL.maxTries + 3 * past || stats.checks >= FILL.maxChecks + 50 * past;
+  // the live reporter (fins/progress.js), on a Full build in the Worker: reads nothing back
+  const reporter = opts.progress?.fillRun() ?? null;
   const CAP = 'cap';               // wallFor stopped on a cap: give up on nothing
   // a built wall goes in: its triangles, its tops into the reach set, its record
   const keep = (r, joined = false) => {
     const at = triangles.length;
     for (const t of r.tris) triangles.push(t);
+    restoreTines(r);               // the capture holds kept walls' tines only (fins/heldtines.js)
     others.add(r.tris, { fill: true, k: props.length });
     for (const p of r.top) { near.add(p); nearIsland.add(p); }
     props.push({ line: r.top, triRanges: [[at, triangles.length]], height: r.height, span: r.length,
@@ -698,6 +737,7 @@ function fillOnce(topo, result, rot, opts, built) {
     floors.push(r.floors ?? null);
     tines += r.tines ?? 0;
     stats.walls++;
+    reporter?.wall(r.tris);
   };
 
   // One wall for group `g` of `live`: the first candidate (bridged lines first, then
@@ -715,6 +755,7 @@ function fillOnce(topo, result, rot, opts, built) {
         if (full()) return CAP;
         aims ??= c0.aims;
         stats.checks++;
+        reporter?.tick(stats);
         let quick = underStretch(c0, tris, redAt, others, strict, local);
         let c = quick && settledStretch(quick, tris, redAt, others, strict, local);
         // ...and relaxed (stationClear): standing on the part where there is part under
@@ -743,28 +784,38 @@ function fillOnce(topo, result, rot, opts, built) {
         // a group whose lines keep passing the checks but won't build (part under it,
         // no headroom) stops here: each drawnWall is ~0.2 s on a 250k-face part
         if (builds++ >= FILL.groupTries) return aims;
-        stats.tries++;
-        const r = drawnWall(c.a, c.b, tris, 0, drawOpts);
-        // Candidates aimed at neighbouring MUST faces may cross an exempt roof.
-        // An intentional exclusion is neither a failed build nor unserved red.
-        if (r.ok && touchesSmallHole(result, r.top)) continue;
-        const why = !r.ok ? r.reason.split(' — ')[0].split(' -- ')[0]
-          : others.hits(r.tris, PROP.sideClear, local && shared, joined ? isFill : null) ? 'touches a support' : null;
-        if (why) {
-          stats.refused[why] = (stats.refused[why] ?? 0) + 1;
-          // (the relaxation that let it through: on the part, on the plate, or joined)
-          if (joined && why === 'touches a support') joinOk = false;
-          else if (relaxed && why === 'touches a support') { if (r.partAttached) partOk = false; else flangeOk = false; }
-          continue;
+        // (more than one when a body would run inside the part: fins/stepsplit.js)
+        const built = wallsAcrossCuts(c.a, c.b, tris, drawOpts);
+        stats.tries += built.tries;
+        builds += built.tries - 1;     // a parted line's extra builds use this group's budget too
+        if (built.parted) stats.parted = (stats.parted ?? 0) + built.parted;
+        const results = built.walls.length ? built.walls : [built.refused];
+        let kept = false;
+        for (const r of results) {
+          if (kept && full()) break;
+          // Candidates aimed at neighbouring MUST faces may cross an exempt roof.
+          // An intentional exclusion is neither a failed build nor unserved red.
+          if (r.ok && touchesSmallHole(result, r.top)) continue;
+          const why = !r.ok ? r.reason.split(' — ')[0].split(' -- ')[0]
+            : others.hits(r.tris, PROP.sideClear, local && shared, joined ? isFill : null) ? 'touches a support' : null;
+          if (why) {
+            stats.refused[why] = (stats.refused[why] ?? 0) + 1;
+            // (the relaxation that let it through: on the part, on the plate, or joined)
+            if (joined && why === 'touches a support') joinOk = false;
+            else if (relaxed && why === 'touches a support') { if (r.partAttached) partOk = false; else flangeOk = false; }
+            continue;
+          }
+          const reach = reachOf(r.top, R), reachIsland = reachOf(r.top, FILL.islandReach);
+          let gain = 0;
+          for (const i of g) {
+            const p = live[i];
+            if ((p.length > 4 ? reachIsland : reach)(p[0], p[1], p[2])) gain += p[3];
+          }
+          if (gain < FILL.minGain) { stats.refused['holds no new red'] = (stats.refused['holds no new red'] ?? 0) + 1; continue; }
+          keep(r, joined);
+          kept = true;
         }
-        const reach = reachOf(r.top, R), reachIsland = reachOf(r.top, FILL.islandReach);
-        let gain = 0;
-        for (const i of g) {
-          const p = live[i];
-          if ((p.length > 4 ? reachIsland : reach)(p[0], p[1], p[2])) gain += p[3];
-        }
-        if (gain < FILL.minGain) { stats.refused['holds no new red'] = (stats.refused['holds no new red'] ?? 0) + 1; continue; }
-        keep(r, joined);
+        if (!kept) continue;
         return true;
       }
       return null;
@@ -849,7 +900,10 @@ function fillOnce(topo, result, rot, opts, built) {
       if (r !== true) for (const i of r) dead.add(live[i]);
     }
   }
-  stats.capped = full() && pts.some((p) => !held(p) && !dead.has(p));
+  // stopped: the Stop cut off red a wall might still have reached (the run was not done)
+  stats.stopped = (stats.walls >= stopAt && (pts.some((p) => !held(p) && !dead.has(p))
+    || isl.some((p) => !held(p) && !dead.has(p)))) || undefined;
+  stats.capped = !stats.stopped && full() && pts.some((p) => !held(p) && !dead.has(p));
   // the red's bare as it stands now, before the island walls (which hold some too):
   // what fillCoverage's rows-or-not pick reads, so that pick stays main's
   const leftRed = red.filter((p) => !held(p));
@@ -867,7 +921,9 @@ function fillOnce(topo, result, rot, opts, built) {
       }
     }
     // stopped on its budget with a start still untried: the card says so
-    stats.islandsCapped = full() && isl.some((p) => !held(p) && !dead.has(p));
+    // (a Stop during this pass, with a start still untried, is a stop, not the budget)
+    if (stats.walls >= stopAt && isl.some((p) => !held(p) && !dead.has(p))) stats.stopped = true;
+    stats.islandsCapped = !stats.stopped && full() && isl.some((p) => !held(p) && !dead.has(p));
   }
   stats.ribs = braceFill(props, floors, triangles, tris, built.triangles ?? [], shared);
   props.forEach((q, k) => { for (const [a, b] of q.triRanges.slice(1)) others.add(triangles.slice(a, b), { fill: true, k }); });

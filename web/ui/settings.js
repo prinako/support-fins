@@ -171,6 +171,7 @@ const PIN_SPACING_TIP = 'How many pins each wall gets. More pins = a firmer hold
 let gripTip = null;
 function syncTineGrip() {
   const on = el('tines').checked;
+  el('bottom-gap-fld').hidden = el('tine-dir').value === 'vertical';
   el('rounded-feet-fld').hidden = el('tine-dir').value === 'vertical';
   el('tinegrip-fld').hidden = !on;
   el('tinedir-fld').hidden = !on;
@@ -194,7 +195,8 @@ window.addEventListener('languagechange', syncTineGrip);   // the swapped toolti
 // Tine direction (GitHub #309): vertical lays resin pins (prop/pins.js). This page's
 // copy is set here for Draw; the Worker gets it in the build's tunables.
 export function tineDirTunables() {
-  return { roundFeet: el('rounded-feet').checked, tineDir: el('tine-dir').value, pinDepth: el('pin-depth').valueAsNumber };
+  return { roundFeet: el('rounded-feet').checked, tineDir: el('tine-dir').value, pinDepth: el('pin-depth').valueAsNumber,
+    sideClearance: el('side-clearance').valueAsNumber, bottomGap: el('bottom-gap').valueAsNumber };
 }
 // Resin cures joined walls into one block (#309), so picking a direction sets
 // Separate walls to match; the box is the user's to change after.
@@ -212,12 +214,17 @@ el('coverage').addEventListener('input', () => debouncedRefresh());
 // tine settings additionally follow the global Tines toggle -- with tines off there
 // is no comb to space.
 function syncSway() {
-  const on = el('sway').checked;
+  // Anchor fins (GH #351) are the same rib placed by hand, so they share the settings
+  const on = el('sway').checked || el('anchor').checked;
   el('sway-from-fld').hidden = !on || !el('tines').checked;
   el('sway-spacing-fld').hidden = !on || !el('tines').checked;
   el('sway-depth-fld').hidden = !on;
   el('full-brace-depth-fld').hidden = !on;
   el('sway-cross-height-fld').hidden = !on || !el('tall-ribs').checked;
+  // An anchor may stand out further than it is tall (a short doorstop at a side's
+  // foot, #426); a sway brace stops at 50% (sway.js), so the field offers past 50%
+  // only while Anchor fins is on
+  el('sway-depth').max = el('anchor').checked ? '200' : '50';
   syncDrawControls();
   syncSectionSums();
 }
@@ -225,11 +232,28 @@ el('sway').addEventListener('change', () => {
   syncSway();
   refreshFins();
 });
+// Anchor fins add nothing to Auto's build: the switch only lets a click stand one
+// (ui/walls.js). The ones already standing stay, though turning it off takes a Brace
+// depth over 50% back to 50%, and they rebuild at that
+el('anchor').addEventListener('change', () => {
+  syncSway();
+  // ...and turning it off brings a deeper setting back to 50%, so the field never
+  // shows a depth no brace builds (the anchors already standing rebuild at 50%)
+  const depth = el('sway-depth');
+  if (!el('anchor').checked && depth.valueAsNumber > 50) { depth.value = '50'; debouncedRefresh(); }
+});
 el('tines').addEventListener('change', syncSway);
 el('full-brace-depth').addEventListener('change', () => refreshFins());
 for (const id of ['sway-from', 'sway-spacing', 'sway-depth', 'sway-cross-height']) {
   el(id).addEventListener('input', () => debouncedRefresh());
 }
+// a typed depth past the field's range snaps into it on commit: the engine caps
+// braces at 50% and anchors at 200%, so 250 would show a depth nothing builds
+el('sway-depth').addEventListener('change', () => {
+  const input = el('sway-depth'), v = input.valueAsNumber;
+  input.value = String(Number.isFinite(v) ? Math.max(+input.min, Math.min(+input.max, v)) : 15);
+  debouncedRefresh();
+});
 el('sway-cross-height').addEventListener('change', () => {
   const input = el('sway-cross-height'), v = input.valueAsNumber;
   input.value = String(Number.isFinite(v) ? Math.max(+input.min, Math.min(+input.max, v)) : 50);
@@ -248,6 +272,24 @@ function wireGap(id, obj, key, lo, hi) {
   });
 }
 wireGap('gap', PROP, 'gap', 0.1, 0.4);
+// Typing applies each finite value (applyTunables clamps it); the field itself is
+// clamped only on change, so a half-typed "1.5" isn't rewritten to "1" mid-entry.
+for (const id of ['side-clearance', 'bottom-gap']) {
+  const input = el(id);
+  input.addEventListener('input', () => {
+    if (!Number.isFinite(input.valueAsNumber)) return;
+    applyTunables(tineDirTunables());
+    debouncedRefresh();
+  });
+  input.addEventListener('change', () => {
+    const v = input.valueAsNumber;
+    if (!Number.isFinite(v)) return;
+    const clamped = Math.max(+input.min, Math.min(+input.max, v));
+    if (clamped === v) return;
+    input.value = String(clamped);
+    input.dispatchEvent(new Event('input'));
+  });
+}
 
 // Wall cutouts (issue #34). CUT.pattern is read fresh by every wall sweep -- the
 // drawn walls here on the page, the auto walls in the Worker via tunables.
@@ -402,6 +444,8 @@ export function syncSectionSums() {
     `${el('nozzle').value} ${t('nozzle')}`,
     el('layerh-fld').hidden ? null : `${el('layer-height').value} ${t('layers')}`,
     `${el('gap').value} ${t('gap')}`,
+    el('side-clearance').valueAsNumber === 0.35 ? null : `${el('side-clearance').value} ${t('Side clearance')}`,
+    el('bottom-gap-fld').hidden || el('bottom-gap').valueAsNumber === 0.2 ? null : `${el('bottom-gap').value} ${t('Bottom gap')}`,
     el('iface').value === 'off' ? null : t('interface'),
   ].filter(Boolean).join(' · ');
   const grip = el('tine-density').valueAsNumber;
@@ -414,9 +458,11 @@ export function syncSectionSums() {
 el('fin-opts').addEventListener('input', syncSectionSums);
 el('fin-opts').addEventListener('change', syncSectionSums);
 
-el('fins-toggle').addEventListener('click', () => {
+/** Fins on or off: the Fins button, and Cancel on a build (off). Off drops any
+ *  build in flight -- refreshFins ends its Worker and unlocks a live one. */
+function setFinsOn(on) {
   histPush();
-  finsVisible = !finsVisible;
+  finsVisible = on;
   if (!finsVisible) drawAugment = false;
   if (removeMode) cancelRemove();
   syncFinsToggleUI();
@@ -427,7 +473,15 @@ el('fins-toggle').addEventListener('click', () => {
   syncRemoveUI();
   setGizmo();
   refreshFins();
-});
+}
+
+el('fins-toggle').addEventListener('click', () => setFinsOn(!finsVisible));
+// Cancel, on the spinner (Auto, Draw) and on a live Full build's bar -- which locks
+// the Fins button, and whose Stop still finishes a build that, on a huge part, can
+// run on for minutes
+for (const id of ['spinner-cancel', 'live-cancel']) {
+  el(id).addEventListener('click', () => { if (finsVisible) setFinsOn(false); });
+}
 
 el('augment-toggle').addEventListener('click', () => {
   if (removeMode) cancelRemove();

@@ -27,22 +27,23 @@ const FINS = triples(block(-1, 1, -1, 1, 5, 35));
 const A = [-30, 0, 35], B = [30, 0, 35];
 
 async function roundTrip(session) {
-  const blob = writeThreeMF(triples(L), FINS, 'shelf', { separate: true, session });
+  const blob = await writeThreeMF(triples(L), FINS, 'shelf', { separate: true, session });
   return readThreeMF(new Uint8Array(await blob.arrayBuffer()));
 }
 
 Deno.test('session: written beside the model and read back as it was', async () => {
   const s = { v: 1, part: { size: [80, 20, 39] }, finMode: 'draw', finsVisible: true, form: { gap: '0.25' },
-              walls: [{ a: [1, 2, 3], b: [4, 5, 6] }, { kind: 'sway', a: [7, 8, 9] }] };
+              walls: [{ a: [1, 2, 3], b: [4, 5, 6] }, { a: [1, 2, 3], b: [4, 5, 6], m: [3, 9, 4] }, { kind: 'sway', a: [7, 8, 9] }, { kind: 'sway', a: [7, 8, 9], capped: true, anchor: true }] };
   const r = await roundTrip(s);
   assert(JSON.stringify(r.session) === JSON.stringify(s), `session changed: ${JSON.stringify(r.session)}`);
-  // still a plain two-object 3MF to anyone else
-  assert(r.objects.length === 2 && r.objects.some((o) => / supports$/.test(o.name)), 'part + supports objects');
+  // the wall stands on the shelf's slab, above the plate: it is a part of the shelf's
+  // object (write.js strandedFrom, #476), which reads back as the shelf alone
+  assert(r.objects.length === 1 && r.objects[0].positions.length === L.length, 'the shelf alone, without its wall');
 });
 
 Deno.test('session: none written, none read; a bad or unknown one is ignored', async () => {
   assert((await roundTrip(null)).session === null, 'no session expected');
-  const model = writeThreeMF(triples(L), [], 'p');
+  const model = await writeThreeMF(triples(L), [], 'p');
   const entries = async (data) => {
     // the same package with SESSION_PART replaced
     const { unzip } = await import(`${WEB}zip.js`);
@@ -88,4 +89,45 @@ Deno.test('session: a wall stored in the part frame rebuilds the same wall after
     for (let k = 0; k < 3; k++) worst = Math.max(worst, Math.abs(after.tris[i][k] - d[k] - before.tris[i][k]));
   }
   assert(worst < 1e-3, `rebuilt wall off by ${worst.toFixed(5)} mm`);
+});
+
+Deno.test('session: a gusset stored in the part frame, with its side normal, rebuilds the same gusset', async () => {
+  const { gussetAt } = await import(`${WEB}gusset.js`);
+  // an upside-down L: a 5 mm upright and a 25 mm arm on top; the gusset off the
+  // upright's +x side (x = 5) out under the arm
+  const L2 = new Float32Array([...block(0, 5, 0, 20, 0, 30), ...block(0, 25, 0, 20, 30, 35)]);
+  const GA = [5, 10, 20], GB = [15, 10, 30], N = [1, 0, 0];
+  const { centre, size } = box(L2);
+  const rel = (p) => p.map((v, k) => v - centre[k]);
+  // as ui/session.js writes it: the points from the box centre, the normal as a direction
+  const saved = { kind: 'gusset', a: rel(GA), b: rel(GB), n: N };
+  const blob = await writeThreeMF(triples(L2), FINS, 'gusset', { separate: true, session: { v: 1, part: { size }, walls: [saved] } });
+  const r = await readThreeMF(new Uint8Array(await blob.arrayBuffer()));
+  const s = r.session.walls[0];
+  assert(JSON.stringify(s) === JSON.stringify(saved), `stored gusset changed: ${JSON.stringify(s)}`);
+
+  const topoOf = (pos) => buildTopology({ getAttribute: (k) => (k === 'position' ? { array: pos } : null) });
+  const before = gussetAt(GA, GB, N, L2, { topo: topoOf(L2), rot: IDENTITY, offset: { x: 0, y: 0, z: 0 } });
+
+  // reload as the site does (see the wall test above): centre on the box, seat, rebuild
+  const obj = r.objects.filter((o) => !/ supports$/.test(o.name));
+  const pos = obj[0].positions, c = box(pos).centre;
+  const local = new Float32Array(pos.length);
+  for (let i = 0; i < pos.length; i++) local[i] = pos[i] - c[i % 3];
+  const topo = topoOf(local);
+  const off = analyze(topo, 45, IDENTITY).offset;
+  const o = [off.x, off.y, off.z];
+  const world = new Float32Array(local.length);
+  for (let i = 0; i < local.length; i++) world[i] = local[i] + o[i % 3];
+  const at = (p) => p.map((v, k) => v + o[k]);
+  const after = gussetAt(at(s.a), at(s.b), s.n, world, { topo, rot: IDENTITY, offset: off });
+
+  assert(before.ok && after.ok, `gussets: ${before.reason ?? 'ok'} / ${after.reason ?? 'ok'}`);
+  assert(before.tris.length === after.tris.length, `${before.tris.length} vs ${after.tris.length} vertices`);
+  const d = GA.map((v, k) => at(s.a)[k] - v);
+  let worst = 0;
+  for (let i = 0; i < before.tris.length; i++) {
+    for (let k = 0; k < 3; k++) worst = Math.max(worst, Math.abs(after.tris[i][k] - d[k] - before.tris[i][k]));
+  }
+  assert(worst < 1e-3, `rebuilt gusset off by ${worst.toFixed(5)} mm`);
 });

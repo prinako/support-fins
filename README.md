@@ -45,7 +45,8 @@ engine is validated against third-party STLs and pinned by an offline test suite
 Working: overhang detection, bed-reachability, contoured breakaway fin walls, orientation +
 load-direction scoring, the combined fin (wall + tines that fuse into the part — the whole
 point; see `docs/FIN-SPEC.md`), optional sway braces that tie tall parts' sides on all
-the way up (auto, or click an upright side in Draw), STL, 3MF, STEP and OBJ import, STL and 3MF export.
+the way up (auto, or click an upright side in Draw), hand-placed gussets that stand off
+an upright side to hold up an overhang above it, STL, 3MF, STEP and OBJ import, STL and 3MF export.
 
 Still open: scale-aware fin profiles, and the bed pad on tilted exports.
 
@@ -97,7 +98,15 @@ breakaway gap and snaps off; only the tines touch the part.
   both axes are held, with each rib placed where its face reaches highest.
 - **Draw**: one click on an upright side stands a brace there. Click a support you placed
   to select it (amber), then press **Delete** or **Remove selected**; Undo brings it back.
-- Three settings appear while it's on: **Brace grip from** (height the tines start;
+- **Anchor fins** (its own switch, just below) holds a part that leans over from its
+  **back**, the side that faces up, instead of standing a wall under the side you see.
+  Hover the back to preview one and click to stand it. It takes a back leaning up to
+  45°, curved or flat, places nothing by itself, and uses the same brace settings.
+  An anchor can also be short, down to 5 mm: click low on an upright side for a
+  doorstop at its foot, so a tall part on a small base can't tip over. With Anchor fins
+  on, **Brace depth** goes up to 200% (100% stands out as far as the anchor is tall);
+  sway braces stop at 50%.
+- Three settings appear while either is on: **Brace grip from** (height the tines start;
   0 = the whole height), **Brace tine spacing** (default 6 mm) and **Brace depth**
   (% of height at the bed; default 15%).
 - Braces keep at least 1 mm of air between them. One that would run into another,
@@ -115,6 +124,49 @@ braces"); the code is `web/sway.js`, and `tests/sway.test.js` pins its behaviour
 prints (2026-09-22) both came out clean, so the defaults below — depth, thickness and
 tine spacing — are the printed ones, not estimates.
 
+### Gussets: fins off a side of the part
+
+Some overhangs have nothing under them but more part, like the arm of an upside-down L.
+A plate fin can't reach it without standing in the way, and the overhang is often too
+far from the bed to be worth a tall wall anyway. A **gusset** comes off the upright side
+instead. It is a wedge-shaped fin whose underside climbs at 50° from level, so it
+prints without support of its own, and whose top holds up the overhang.
+
+![Placing a gusset under an upside-down L](docs/images/gusset-place.gif)
+
+**Using it:** in **Draw**, pick **Gusset** (next to Line and Curve). Click the upright side
+under the overhang, then click the point on the overhang the gusset should reach out to.
+It always runs square off the side. The second click only sets how far it reaches, and the
+preview shows it before you commit. Backspace takes back the first click; Esc or a right
+click cancels. Place as many as you like, side by side.
+
+![Two gussets holding up the arm of an upside-down L](docs/images/gusset-app.png)
+
+**How it holds on:**
+
+- **Side tines, always.** One-layer tines tie the gusset's inner edge to the side, with one
+  in its very first layer (so it never starts printing in air), one in its top layer, and
+  the rest at most 2 mm apart. They're built even with Tines off.
+
+  ![Side tines along a gusset's inner edge, from its first layer to its top](docs/images/gusset-side-tines.png)
+
+- **Top tines** bite into the overhang when its underside is sloped and Tines is on. A flat
+  ceiling gets none (horizontal tines have nothing to bite), so the gusset stops 0.2 mm
+  short and the ceiling's first layer bridges onto it, like any other fin.
+- Like every support here, it stands off the part by the breakaway gap, and only the
+  tines touch it.
+
+A gusset is refused, with the reason, if the side isn't solid where its tines go, if the
+reach is too short, if it would run into the part, or if it would touch another support
+(the two would fuse into one piece).
+
+![The printed L with its gusset still attached](docs/images/gusset-print.jpg)
+
+**Status: printed once.** Tested on a 25 × 20 × 35 mm upside-down L (2026-10-28) with
+default settings. The angle, gap and tine spacing are the starting values, not tuned
+from prints yet. The numbers and reasoning are in `docs/FIN-SPEC.md` ("Gussets"), the
+code is `web/gusset.js`, and `tests/gusset.test.js` pins its behaviour.
+
 ### The "no config, geometry only" notice
 
 Opening the 3MF, **Bambu Studio** ("invalid config, load geometry data only") and
@@ -129,7 +181,7 @@ The export ships **pure geometry with no slicer profile embedded** on purpose: b
 in a profile would silence the notice but replace whoever-opens-it's printer/filament/
 print settings with ours on load, and it would have to be re-authored per slicer _and_
 per slicer version — a worse trade than a one-time, benign notice on a file whose
-geometry is already right. See `web/threemf.js` for the writer.
+geometry is already right. See `web/threemf/write.js` for the writer.
 
 ## Run it locally
 
@@ -156,10 +208,23 @@ docker compose up -d        # http://localhost:8731/
 
 This uses the latest stable release by default.
 
-To pin a release, add this to a `.env` file beside `docker-compose.yml`:
+The image runs nginx as the non-root user `nginx` (UID 101), listening on
+container port **8080**. Compose maps it to host port **8731**. For a direct
+container run, use `docker run --rm -p 8731:8080 ghcr.io/gittrahan/support-fins:latest`;
+reverse proxies connecting directly to the container should also use port 8080.
+
+**Port migration:** older images listen on port 80. Update custom port mappings,
+proxy targets and health checks when upgrading to the non-root image. Keep an
+older image paired with its release's Compose file (and port 80), rather than
+using the current Compose file with it. Image changes on `main` reach `latest`
+only after a release is published; until then, build this checkout locally to
+use its matching image.
+
+To pin a release, use that release's `docker-compose.yml` and add its version to
+a `.env` file beside it:
 
 ```env
-SUPPORT_FINS_VERSION=v0.1.0
+SUPPORT_FINS_VERSION=v1.0.0
 ```
 
 To build the checked-out source instead:
@@ -167,6 +232,19 @@ To build the checked-out source instead:
 ```bash
 docker compose up --build
 ```
+
+Container checks run in the Docker CI workflow on Linux amd64 and arm64. To run
+the same checks with Docker Engine, Buildx, Compose v2, Python 3 and curl installed:
+
+```bash
+bash .github/scripts/test-docker.sh
+```
+
+This builds a test image, checks Compose health and HTTP delivery on port 8731,
+and repeats with a read-only filesystem, writable `/tmp` and no Linux
+capabilities. It uses unique test resource names, removes its containers and image
+on exit, and keeps diagnostics under `tmp/docker-smoke.*/evidence/`. Port 8731
+must be free. Docker stores image layers and build cache in its own data directory.
 
 The Python prototype is the proof of concept the engine was ported from — plain mesh math,
 no CAD kernel:
@@ -185,6 +263,19 @@ Tests (Deno for the JS engine):
 deno test --allow-read tests/
 ```
 
+### Releases
+
+`main` is staging: once Cloudflare deploys the `live` branch, every merge shows up at the
+`main` preview, not on printfins.com.
+A PR that changes what a user sees adds one line to `unreleased` in `web/changelog.json`.
+To ship, run Actions > release > Run workflow (version empty for the next patch, or say
+`1.1.0`). It stamps everything unreleased under that version, writes the landing card's
+What's new list into `web/index.html`, runs the tests and pushes that as one release
+commit to `main`; then it tags it, moves the `live` branch printfins.com deploys from,
+attaches the plugin builds and publishes the Docker image. Fix an entry's wording on `main`
+before you run it. Releases are on the
+[Releases page](https://github.com/gittrahan/support-fins/releases) and the site's landing card.
+
 ## The PrusaSlicer plugin (hand-placed)
 
 `plugins/prusa/` is a native PrusaSlicer 3.0 plugin, **Support Fins → Add a Fin**. The 3.0
@@ -197,8 +288,8 @@ which would stretch the one-layer tines. Confirmed working in PrusaSlicer 3.0 al
 
 ## Honest limitations
 
-- Overhangs sitting over the _part_ rather than the plate aren't handled — fins attach to
-  the bed only.
+- Overhangs sitting over the _part_ rather than the plate aren't handled automatically.
+  Fins attach to the bed, and a gusset off an upright side has to be placed by hand.
 - Features shorter than roughly a 4 mm wall height are too short for a real fin.
 - It won't pick your orientation for you. On purpose.
 
@@ -209,7 +300,8 @@ web/         the browser app (live at printfins.com)
 plugins/     slicer/CAD integrations (PrusaSlicer, OrcaSlicer, Onshape, Autodesk Fusion), the
              command line, and an MCP server for AI clients
 prototype/   Python/trimesh proof of concept the engine was ported from
-docs/        FIN-SPEC.md — the verified fin geometry, with sources
+docs/        FIN-SPEC.md — the verified fin geometry, with sources; PLUGIN-CONFIG.md —
+             every plugin setting (Orca config keys, CLI flags)
 tests/       offline geometry regression suite
 ```
 

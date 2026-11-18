@@ -1,6 +1,6 @@
 import { t } from './i18n.js';
 /**
- * The pose: the rotate gizmo, the 90-degree and reset buttons, and "Lay a face
+ * The pose: the rotate gizmo, the 45-degree and reset buttons, and "Lay a face
  * flat" with its hovered-face highlight. app.js's pointer dispatch calls
  * layHover / layClick while layActive().
  */
@@ -19,6 +19,7 @@ import { refreshFins } from './finbuild.js';
 import { finsVisible } from './settings.js';
 import { part, topology, shade } from './part.js';
 import { moveActive, setMove } from './move.js';
+import { uiLocked, onLockChange } from './lock.js';
 
 // The user rotates. Always. Auto-orientation may suggest, never apply -- the
 // spike's strength-optimal pose for one hub was 155mm tall balanced on a needle:
@@ -42,7 +43,7 @@ gizmo.addEventListener('dragging-changed', (e) => {
   if (e.value) showDragAngle();
   if (!e.value) {
     el('rot-delta').textContent = '';
-    // a turn by the rings is one undo step, like the 90deg buttons (it never was one)
+    // a turn by the rings is one undo step, like the 45deg buttons (it never was one)
     const turned = !!part && !part.quaternion.equals(dragFrom);
     pressTurned = turned;
     if (turned) clearSuggestionMark();
@@ -110,7 +111,7 @@ function showDelta(axis, radians) {
   const deg = THREE.MathUtils.radToDeg(radians);
   el('rot-delta').textContent =
     `${label} ${deg >= 0 ? '+' : ''}${deg.toFixed(deg % 1 ? 1 : 0)}°`;
-  if (ringDrag) showDragAngle();     // the 90deg buttons write the delta too
+  if (ringDrag) showDragAngle();     // the 45deg buttons write the delta too
 }
 
 // The angle readout lives in the Rotate popover; a ring drag with it folded showed
@@ -154,13 +155,13 @@ export function setLayPlacing(v) {
  *  default so casual clicks orbit instead of silently re-laying the part. */
 export const layActive = () => layPlacing;
 
-// The Rotate badge in the view toolbar (toolbar.js) holds the 90deg steps, Reset,
+// The Rotate badge in the view toolbar (toolbar.js) holds the 45deg steps, Reset,
 // Lay a face flat and the rings switch below. Folding it disarms Lay a face flat:
 // its button is the only sign it is armed, and an armed click re-lays the part.
 addBadge('rotate-badge', { pop: 'rotate-pop', onFold: () => { if (layPlacing) cancelLay(); } });
 
 // "Show rotate rings": off hides the rings until turned back on (they cover the
-// part, #53); the 90deg buttons, Reset and Lay a face flat still turn it.
+// part, #53); the 45deg buttons, Reset and Lay a face flat still turn it.
 // Remembered, storage optional, like "Highlight small overhangs".
 const RINGS_KEY = 'sf.showRings';
 // A touch screen starts with them off: on a phone they cover most of the part, so
@@ -186,7 +187,7 @@ el('show-rings').addEventListener('change', (e) => {
  *  its place while that is up: two sets of handles on one part is a misclick. */
 export function setGizmo() {
   const on = showRings && !!part && !drawActive() && !layActive() && !removeActive()
-    && !planeHandleShown() && !moveActive();
+    && !planeHandleShown() && !moveActive() && !uiLocked();
   gizmo.enabled = on;
   // A disabled gizmo stops tracking hover, so a ring hovered last would stay
   // "under the pointer" and app.js would swallow the next pick for it.
@@ -217,19 +218,25 @@ export function cancelLay() {
   syncLayUI();
 }
 
+// A live Full build (ui/lock.js): the rings and an armed lay go; the rings come back after.
+onLockChange((locked) => { if (locked && layPlacing) cancelLay(); setGizmo(); });
+
 function syncLayUI() {
   el('lay-face').textContent = layPlacing ? t('Click a face to lay it flat — Esc cancels')
     : t('Lay a face flat');
   el('lay-face').classList.toggle('active', layPlacing);
 }
 
-/** Rotate 90 degrees about a world axis, keeping the part seated. */
-function rotate90(name, axis) {
+// 45, not 90: leaning a part back is the usual turn, and two clicks still make 90.
+const STEP = Math.PI / 4;
+
+/** Rotate one step about a world axis, keeping the part seated. */
+function rotateStep(name, axis) {
   if (!part) return;
   histPush();
-  const q = new THREE.Quaternion().setFromAxisAngle(axis, Math.PI / 2);
+  const q = new THREE.Quaternion().setFromAxisAngle(axis, STEP);
   part.quaternion.premultiply(q);   // premultiply = about the WORLD axis
-  showDelta(name.toUpperCase(), Math.PI / 2);
+  showDelta(name.toUpperCase(), STEP);
   clearSuggestionMark();
   shade();
 }
@@ -274,7 +281,7 @@ export function pickFace(ev) {
 const AXES = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0),
                z: new THREE.Vector3(0, 0, 1) };
 for (const a of ['x', 'y', 'z']) {
-  el(`rot-${a}`).addEventListener('click', () => rotate90(a, AXES[a]));
+  el(`rot-${a}`).addEventListener('click', () => rotateStep(a, AXES[a]));
 }
 el('rot-reset').addEventListener('click', () => {
   if (!part) return;

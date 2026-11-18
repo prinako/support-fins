@@ -16,7 +16,9 @@
  * into a watertight wall, reusing prop/sweep.js's proven `sweep` and its three
  * line-settling passes verbatim.
  */
-import { PROP, PART_BAND, footFor, surfaceZsAt as gridZsAt, surfaceHitsAt as gridHitsAt, sweep, sweepBetween, sweepSquat, braceWall, floorLine, moldLine, contourTop, lowerSag, settleTop, emitTines, tineStepFor, crestOn, crestPart } from './prop.js';
+import { bodyCut } from './prop/bodycut.js';
+import { arcStations, arcThrough, DRAW_MIN_RADIUS } from './drawarc.js';
+import { PROP, PART_BAND, footFor, surfaceZsAt as gridZsAt, surfaceHitsAt as gridHitsAt, sweep, sweepBetween, sweepSquat, braceWall, floorLine, moldLine, contourTop, lowerSag, settleTop, emitTines, tineStepFor, crestOn, crestPart, trimmedEnds } from './prop.js';
 
 /**
  * A hand-drawn wall may be much shorter than an auto wall (PROP.minSpan, 7 mm): the user
@@ -130,18 +132,24 @@ function acrossClear(line, tris, w, z) {
  * is the part surface nearest the line the user drew -- not the global lowest,
  * which would jump to another feature -- and then the three prop/contact.js passes pull
  * the top to a clean `gap` below the part exactly as the auto-placer does. `under`
- * limits the pick to down-facing surfaces (the fill pass; see below).
+ * limits the pick to down-facing surfaces (the fill pass; see below), and then a line
+ * with no down-facing surface over any station is null (#475).
  */
-export function drawnLine(a, b, tris, step = PROP.stationStep, band = Infinity, under = false) {
+export function drawnLine(a, b, tris, step = PROP.stationStep, band = Infinity, under = false, through = null) {
   const dx = b[0] - a[0], dy = b[1] - a[1];
   const len = Math.hypot(dx, dy);
   if (len < 1e-6) return null;
-  const n = Math.max(PROP.minStations - 1, Math.ceil(len / step));
+  // `through`: a curved wall's third click -- the stations run round the arc from a
+  // to b through it (drawarc.js); in line with a and b it is the straight wall
+  const arc = through ? arcStations(a, b, through, step, PROP.minStations) : null;
+  const n = arc ? arc.length - 1 : Math.max(PROP.minStations - 1, Math.ceil(len / step));
   const line = [];
+  let hits = 0;
   for (let k = 0; k <= n; k++) {
     const t = k / n;
-    const x = a[0] + dx * t, y = a[1] + dy * t;
-    const hint = a[2] + (b[2] - a[2]) * t;   // the height the drawn line implies here
+    const x = arc ? arc[k][0] : a[0] + dx * t, y = arc ? arc[k][1] : a[1] + dy * t;
+    // the height the drawn line implies here
+    const hint = arc ? arc[k][2] : a[2] + (b[2] - a[2]) * t;
     let z = hint, best = Infinity;
     // `under`: only surfaces facing DOWN. A column through a leaning figure meets its
     // back (the underside, red) and its front; on a curved back the straight-line
@@ -154,8 +162,13 @@ export function drawnLine(a, b, tris, step = PROP.stationStep, band = Infinity, 
       const d = Math.abs(zz - hint);
       if (d < best) { best = d; z = zz; }
     }
+    if (zs.length) hits++;
     line.push([x, y, z]);
   }
+  // `under` (the fill pass and Full's rows): a line with no down-facing surface over
+  // any station holds nothing -- every station would keep its hint and stand a wall in
+  // open air beside the part (GitHub #475). A hand-drawn line keeps its hint.
+  if (under && !hits) return null;
   // `band` bounds every settle pass to surfaces within `band` of the clicked
   // overhang, so an over-the-part overhang isn't dragged down onto its own floor
   // (the collapse that made part-attached supports impossible). Infinity keeps
@@ -169,7 +182,8 @@ export function drawnLine(a, b, tris, step = PROP.stationStep, band = Infinity, 
 /**
  * Build one drawn breakaway wall. Returns `{ ok: true, tris, length, height, top }`
  * (`top`: the wall's contact line, the surface-z stations its top follows).
- * `opts.under`: follow only down-facing surfaces (drawnLine) -- the fill pass's walls.
+ * `opts.under`: follow only down-facing surfaces (drawnLine) -- the fill pass's walls;
+ *   a line with none over any station is refused, "no surface found" (#475).
  * `opts.plateOnly`: never stand on the part; a line with part under it is refused (#218).
  * `opts.brace`: a wall that stands on the plate over BRACE.aspect x its length gets
  *   ribs at the plate (prop/brace.js; `braces` counts them). `opts.braceTall`: one
@@ -182,10 +196,18 @@ export function drawnLine(a, b, tris, step = PROP.stationStep, band = Infinity, 
  */
 export function drawnWall(a, b, tris, zBed = 0, opts = {}) {
   const dx = b[0] - a[0], dy = b[1] - a[1];
-  const len = Math.hypot(dx, dy);
-  if (len < DRAW_MIN_LEN) {
-    return { ok: false, reason: `wall too short — ${len.toFixed(1)}mm, needs ${DRAW_MIN_LEN}mm` };
+  const chord = Math.hypot(dx, dy);
+  if (chord < DRAW_MIN_LEN) {
+    return { ok: false, reason: `wall too short — ${chord.toFixed(1)}mm, needs ${DRAW_MIN_LEN}mm` };
   }
+  // `opts.through`: a curved wall (drawarc.js), refused when it bends tighter than
+  // its foot can follow. In line with the ends it is the straight wall.
+  const bend = opts.through ? arcThrough(a, b, opts.through) : null;
+  if (bend && bend.r < DRAW_MIN_RADIUS) {
+    return { ok: false, reason: `curve too tight — ${bend.r.toFixed(1)}mm radius, needs ${DRAW_MIN_RADIUS}mm` };
+  }
+  const through = bend ? opts.through : null;
+  const len = bend ? Math.abs(bend.sweep) * bend.r : chord;
   const out = [];
   if (crestOn()) crestPart(tris, opts.layerHeight);   // the interface crest's 'flat' test reads the underside here
   // A drawn wall grips the part with the same tine comb the auto fins use, when
@@ -202,6 +224,15 @@ export function drawnWall(a, b, tris, zBed = 0, opts = {}) {
   const withBraces = (line, floorZ) => opts.brace || opts.braceTall
     ? braceWall(line, floorZ, tris, zBed, out, opts.braceClear, { slim: !!opts.brace, tall: !!opts.braceTall })
     : 0;
+  // A built body that runs inside the part (prop/bodycut.js) is refused, saying where and
+  // over which stations, so a caller that may build two walls can part it there
+  // (fins/stepsplit.js). Needs the topology; the live preview omits it and stays as drawn,
+  // and `unmeasured` skips it for a search whose results are built again before they're kept.
+  const cutRefusal = (built, stations) => {
+    const cutAt = opts.topo && !opts.unmeasured && bodyCut(opts.topo, opts.rot, opts.offset, built);
+    return cutAt ? { ok: false, cutAt, top: stations, reason: 'the wall would cut into the part '
+      + 'where its surface steps — draw two lines, one each side of the step' } : null;
+  };
   // PART-ATTACHED first: if solid part sits below the overhang, the support
   // stands on THAT, not the plate. Probe with a BANDED top contour so the
   // overhang isn't settled down onto the very floor we're looking for; floorLine
@@ -211,13 +242,13 @@ export function drawnWall(a, b, tris, zBed = 0, opts = {}) {
   // degrade to z=0 on their own. This is what stops the "marched past the part
   // straight to the plate" bug: on the over-the-part case sweep-to-plate SUCCEEDS
   // and silently builds the tall stilt, so the fix must PREFER the floor.
-  const topPA = drawnLine(a, b, tris, PROP.stationStep, PART_BAND, !!opts.under);
+  let topPA = drawnLine(a, b, tris, PROP.stationStep, PART_BAND, !!opts.under, through);
   // ...unless the line lies ON the part: drawn on an UPWARD face (the UI lets you
   // click one), it read the part's own underside as its floor and stood the wall
   // inside the part, floor to top (local issue 033: a sphere's top, 296-384
   // vertices in). That line falls through to the plate wall below.
   if (topPA && topPA.length >= PROP.minStations && !onThePart(topPA, tris)) {
-    const floor = floorLine(topPA, tris);
+    let floor = floorLine(topPA, tris);
     let floorMax = 0;
     for (const p of floor) if (p[2] > floorMax) floorMax = p[2];
     // Plate only (#218): part under the overhang refuses the wall outright -- the
@@ -226,8 +257,23 @@ export function drawnWall(a, b, tris, zBed = 0, opts = {}) {
       return { ok: false, reason: 'part of the model sits under this overhang, and '
         + 'Plate only is on — a support can’t stand on the part here' };
     }
+    // A wall standing on the part keeps its ends off the part's side walls, as Auto's do
+    // (#119: a line drawn to a recessed box's end wall built flush against it and welded).
+    // Needs the topology; the live preview omits it and stays as drawn.
+    if (floorMax > PROP.gap + 0.5 && opts.topo) {
+      const keep = trimmedEnds(topPA, floor, opts.topo, opts.rot, opts.offset);
+      if (!keep) {
+        return { ok: false, reason: 'too close to the part’s side wall — draw the line '
+          + 'a little further from it' };
+      }
+      topPA = topPA.slice(keep[0], keep[1]);
+      floor = floor.slice(keep[0], keep[1]);
+    }
     const mold = floorMax > PROP.gap + 0.5 ? moldLine(topPA, tris) : null;
+    const before = out.length;
     if (mold && sweepBetween(mold.top, mold.floor, out)) {
+      const cut = cutRefusal(out.slice(before), topPA);
+      if (cut) return cut;
       let height = 0;
       for (let i = 0; i < topPA.length; i++) {
         height = Math.max(height, (topPA[i][2] - PROP.gap) - floor[i][2]);
@@ -241,7 +287,7 @@ export function drawnWall(a, b, tris, zBed = 0, opts = {}) {
     }
   }
 
-  const line = drawnLine(a, b, tris, PROP.stationStep, Infinity, !!opts.under);
+  const line = drawnLine(a, b, tris, PROP.stationStep, Infinity, !!opts.under, through);
   if (!line || line.length < PROP.minStations) {
     return { ok: false, reason: 'no surface found along that line' };
   }
@@ -268,6 +314,7 @@ export function drawnWall(a, b, tris, zBed = 0, opts = {}) {
   // was out of reach (too thin a gap to seat a wall), not that we ignore it.
   // The clicked endpoints' heights are exactly "what the user pointed at", so a
   // high clickTop with a failed sweep is the unreachable case, not a low line.
+  const plateAt = out.length;
   if (!sweep(line, zBed, out)) {
     // Neither full-height wall fits. Before refusing, the two SQUAT walls a user
     // drawing by hand can still want (local issue 011) -- tried only now, so every
@@ -275,6 +322,8 @@ export function drawnWall(a, b, tris, zBed = 0, opts = {}) {
     //   - on the part, with as little as minHeightSquat headroom (a hand just over a thigh);
     //   - on the plate, its low stations a brimmed squat stem, the tall ones the full wall.
     const squat = squatWall(topPA, line, tris, zBed, !!opts.plateOnly);
+    const squatCut = squat && cutRefusal(squat.tris, squat.top);
+    if (squatCut) return squatCut;
     if (squat) {
       out.push(...squat.tris);
       const tines = withTines(squat.top, squat.partAttached ? undefined : PROP.squatBrimH);
@@ -288,6 +337,8 @@ export function drawnWall(a, b, tris, zBed = 0, opts = {}) {
     }
     return { ok: false, reason: 'nothing to hold up there — the line sits at the plate' };
   }
+  const cut = cutRefusal(out.slice(plateAt), line);
+  if (cut) return cut;
   let height = 0;
   for (const p of line) height = Math.max(height, p[2] - PROP.gap - zBed);
   const braces = withBraces(line, () => zBed);

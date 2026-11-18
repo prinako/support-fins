@@ -6,7 +6,7 @@
 //   deno test --allow-read plugins/shared/tests/
 import { computeFins, ENGINE_DEFAULTS, optionsFromDialog, optionVisible } from '../engine/fins_entry.js';
 import { DEFAULT_THRESHOLD } from '../../../web/overhangs.js';
-import { readSTL, MODELS, rotX, rotY, assert } from '../../../tests/_util.js';
+import { readSTL, MODELS, rotX, rotY, assert, block } from '../../../tests/_util.js';
 import { CUTOUT_PATTERNS } from '../../../web/cutout.js';
 import { SWAY } from '../../../web/sway.js';
 import { FIN } from '../../../web/fins/config.js';
@@ -49,7 +49,13 @@ const SITE_EXCLUDED = {
   'file': 'loading a model is the host\'s job', 'file-add': 'adding a model to the plate is the host\'s job', 'volume': 'site build-volume preview',
   'vx': 'site build-volume preview', 'vy': 'site build-volume preview', 'vz': 'site build-volume preview',
   'plugins-computer': 'picks which plugin download to offer',
-  'scale-pct': 'the part\'s size is the host\'s (every CAD and slicer scales it)',
+  'scale-x-mm': 'the part\'s size is the host\'s (every CAD and slicer scales it)',
+  'scale-x-pct': 'the part\'s size is the host\'s (every CAD and slicer scales it)',
+  'scale-y-mm': 'the part\'s size is the host\'s (every CAD and slicer scales it)',
+  'scale-y-pct': 'the part\'s size is the host\'s (every CAD and slicer scales it)',
+  'scale-z-mm': 'the part\'s size is the host\'s (every CAD and slicer scales it)',
+  'scale-z-pct': 'the part\'s size is the host\'s (every CAD and slicer scales it)',
+  'scale-uniform': 'the part\'s size is the host\'s (every CAD and slicer scales it)',
   'show-layers': 'site display', 'highlight-small': 'site display', 'show-islands': 'site display', 'show-rings': 'site display',
   'nav-preset': 'site mouse navigation', 'opts-search': 'site settings search',
   'pad-h': 'Custom pad', 'pad-gap': 'Custom pad', 'pad-grip': 'Custom pad', 'pad-margin': 'Custom pad',
@@ -57,6 +63,7 @@ const SITE_EXCLUDED = {
   'wall-lines': 'the plugins scale by nozzle diameter but retain 2-line walls (web/nozzle.js)',
   'curved-walls': 'site first, off by default: the plugins build without it until the print test (web/prop/curved.js)',
   'rounded-feet': 'browser FDM opt-in; plugin defaults keep their feet',
+  'anchor': 'Anchor fins are placed by hand with a click on the part, which the plugins have no viewport for (web/ui/walls.js)',
 };
 
 Deno.test('options.json is well formed', () => {
@@ -144,6 +151,13 @@ Deno.test('the entry\'s defaults are the schema\'s; sway\'s are sway.js\'s', () 
 
 Deno.test('optionVisible hides exactly what the site hides (web/ui/settings.js)', () => {
   const shown = (key, values) => optionVisible(key, values);
+  for (const tines of [true, false]) {
+    assert(shown('sideClearance', { tineDir: 'vertical', tines }), 'side clearance remains active in resin');
+    for (const key of ['bottomGap']) {
+      assert(shown(key, { tineDir: 'horizontal', tines }), `${key}: hidden for FDM`);
+      assert(!shown(key, { tineDir: 'vertical', tines }), `${key}: shown for resin`);
+    }
+  }
   assert(shown('tineDensity', {}) && !shown('tineDensity', { tines: false }), 'tine grip follows Tines');
   // layer height: tines on, or a pad that is one layer tall (Light, or Auto's Light)
   assert(shown('layerHeight', { tines: false, padStyle: 'auto' }), 'layer height with the Auto pad');
@@ -212,7 +226,7 @@ Deno.test('dialog defaults build exactly the engine defaults', () => {
 // A model tilted about Y. The lbracket at 35 deg gets walls, tines and a pad, so every
 // option shows -- but Plate only needs a wall standing on the part, which it has none
 // of: the portal on its side at Y90 stands its one wall on its lower leg. Long walls
-// needs rows that win the fill race: the lbracket at X40 (tests/rows.test.js).
+// needs rows that change the fill: the cylinder at X40.
 function posed(name = 'lbracket', deg = 35, rot = rotY) {
   const pos = readSTL(Deno.readFileSync(`${MODELS}${name}.stl`)), m = rot(deg);
   const out = new Float64Array(pos.length);
@@ -236,10 +250,12 @@ function changesFins(part, o, base, build) {
 
 Deno.test('every option reaches the geometry (no dead dialog control)', () => {
   const lbracket = posed();
+  const pocket = new Float32Array([...block(-20, 20, -5, 5, 0, 5), ...block(-20, 20, -5, 5, 15, 17),
+    ...block(-20, 20, -5, -1.1, 5, 15), ...block(-20, 20, 1.1, 5, 5, 15)]);
   const bar = Float64Array.from(readSTL(Deno.readFileSync(`${MODELS}bar.stl`)));  // upright: braced
   try {
     const plain = computeFins(lbracket, {}).triangles;
-    const portal = posed('portal', 90), rowed = posed('lbracket', 40, rotX), sphere = posed('sphere', 0);
+    const portal = posed('portal', 90), rowed = posed('cylinder', 40, rotX), sphere = posed('sphere', 0);
     const braced = computeFins(bar, { sway: { on: true } }).triangles;
     for (const o of OPTS) {
       const [, sub] = o.key.split('.');
@@ -256,6 +272,8 @@ Deno.test('every option reaches the geometry (no dead dialog control)', () => {
           : o.key === 'separateWalls'   // the sphere has joined fill walls and bases
             ? changesFins(sphere, o, computeFins(sphere, { mode: 'full' }).triangles,
                 (v) => computeFins(sphere, { mode: 'full', separateWalls: v }))
+          : ['sideClearance', 'bottomGap'].includes(o.key)
+            ? changesFins(pocket, o, computeFins(pocket, {}).triangles, (v) => computeFins(pocket, { [o.key]: v }))
           : o.key === 'plateOnly'
             ? changesFins(portal, o, computeFins(portal, {}).triangles, (v) => computeFins(portal, { plateOnly: v }))
           : changesFins(lbracket, o, plain, (v) => computeFins(lbracket, { [o.key]: v }));
@@ -276,6 +294,6 @@ Deno.test('Full coverage ignores the coverage slider and Auto ignores Long walls
   assert(same(full, computeFins(lbracket, { mode: 'full', coverage: 1 }).triangles), 'Full read coverage 1');
   assert(!same(full, computeFins(lbracket, {}).triangles), 'Full built the same fins as Auto');
   // and Long walls is Full's alone: hidden in Auto, so it must not move Auto's fins
-  const rowed = posed('lbracket', 40, rotX), auto = computeFins(rowed, {}).triangles;
+  const rowed = posed('cylinder', 40, rotX), auto = computeFins(rowed, {}).triangles;
   assert(same(auto, computeFins(rowed, { longWalls: false }).triangles), 'Auto read Long walls');
 });

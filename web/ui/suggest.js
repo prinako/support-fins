@@ -61,7 +61,8 @@ function noSupportVerdict(c) {
     return { tier: 'free', badge: t('No support'),
       note: `${t('This way up it needs no fins, 0 g.')}${roughCaveat}${strengthCaveat}` };
   }
-  if ((c.bore ?? 0) === 0 && suggestCurBore > 0) {
+  // bore is null when Suggest ranked without fin builds (a huge part): unknown, no claim
+  if (c.bore === 0 && suggestCurBore > 0) {
     const grams = (c.volume ?? 0) * materialDensity / 1000;
     return { tier: 'holeclean', badge: t('Bores clean'),
       note: t("This way up the bores point up, so there's no support to pull out of a hole ({grams} g of fins, all on the outside).",
@@ -77,7 +78,10 @@ function renderSuggestions() {
     const row = document.createElement('button');
     row.className = 'btn suggest-row';
     const point = c.seating === 'point';
-    const overs = c.walls === 0 ? t('no fins') : tn('{n} fin', '{n} fins', c.walls);
+    // walls is null when Suggest ranked a huge part without fin builds: no count to show
+    // (a pose with no overhang at all still reads "no fins": regions comes from analysis)
+    const walls = c.walls ?? (c.regions === 0 ? 0 : null);
+    const overs = walls === null ? '' : ` · ${walls === 0 ? t('no fins') : tn('{n} fin', '{n} fins', walls)}`;
     // Rough holes = the small hole/slot/bore-top overhangs this pose leaves
     // unsupported (dropped slivers). Showing it is what makes a hole-friendly
     // pose legible: "Best · 12 rough" over "#3 · 561".
@@ -96,7 +100,7 @@ function renderSuggestions() {
     const tail = point ? ` · ${t('can’t print (on a point)')}` : roughTxt;
     row.innerHTML =
       `<span class="sr-rank">${i === 0 ? t('Best') : `#${i + 1}`}</span>` +
-      `<span class="sr-line">${c.height.toFixed(0)} mm · ${overs}${tail}${badge}</span>`;
+      `<span class="sr-line">${c.height.toFixed(0)} mm${overs}${tail}${badge}</span>`;
     if (point) row.classList.add('bad');
     if (verdict?.tier === 'free') row.classList.add('free');
     row.addEventListener('click', () => {
@@ -144,7 +148,7 @@ export function hideSuggestions() {
   note.className = 'hint';
 }
 
-/** A manual turn (ring drag, 90° button, lay flat) moves the part off the pose the
+/** A manual turn (ring drag, 45° button, lay flat) moves the part off the pose the
  *  highlighted row stands for, so drop the highlight. The ranking doesn't depend
  *  on the pose, so the list stays and any row can still be clicked. */
 export function clearSuggestionMark() {
@@ -156,10 +160,12 @@ export function clearSuggestionMark() {
  * 15-35 s and froze the page doing it here. The Worker gets the same tunables an
  * Auto build sends, so it scores with the page's gap, pad and nozzle. If no Worker
  * can run (file://, a clone or worker failure) it ranks here, as it always did.
+ * The Worker reports progress after every pose (`onProgress(fraction)`), shown on
+ * the button so a long ranking reads as working, not stuck.
  */
 let rankId = 0;
 let cancelRanking = null;   // drops the ranking in flight; it then resolves to null
-function rankPoses(topo, thr) {
+function rankPoses(topo, thr, onProgress) {
   let cancelled = false;
   const inline = () => new Promise((resolve, reject) => {
     // let the button repaint before the solve blocks the thread
@@ -178,11 +184,13 @@ function rankPoses(topo, thr) {
     const done = () => { if (cancelRanking === cancel) cancelRanking = null; };
     const finish = (v) => { done(); w?.terminate(); resolve(v); };
     // inline stays cancellable until it runs: it checks `cancelled` first
-    const fallBack = () => { w?.terminate(); w = null; resolve(inline().finally(done)); };
+    // the inline run reports no progress: drop a stale "Ranking… 40%" first
+    const fallBack = () => { w?.terminate(); w = null; onProgress?.(null); resolve(inline().finally(done)); };
     cancelRanking = cancel;
     if (!w) { fallBack(); return; }
     w.onmessage = (e) => {
       if (e.data.id !== id) return;
+      if (e.data.progress !== undefined) { onProgress?.(e.data.progress); return; }
       if (e.data.error) { console.warn('suggest worker failed; ranking inline', e.data.error); fallBack(); return; }
       finish(e.data.ranked);
     };
@@ -210,7 +218,8 @@ el('suggest-orient').addEventListener('click', () => {
   // Walls the current pose stands inside a bore -- the baseline the "points the
   // bores up" verdict measures its win against.
   const curBore = (lastBuilt?.props ?? []).filter((q) => q.inBore).length;
-  rankPoses(topo, threshold).then((ranked) => {
+  const progress = (f) => { if (btn.disabled) btn.textContent = f === null ? t('Ranking…') : `${t('Ranking…')} ${Math.round(f * 100)}%`; };
+  rankPoses(topo, threshold, progress).then((ranked) => {
     // cancelled (hideSuggestions), or a different part was loaded while it ranked
     if (!ranked || topo !== topology) return;
     const { candidates, confidence } = ranked;

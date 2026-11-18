@@ -38,6 +38,8 @@ export const ENGINE_DEFAULTS = Object.freeze({
   nozzle: OPTION.nozzle.default,
   threshold: DEFAULT_THRESHOLD,              // degrees; options.json's default is pinned to it
   gap: OPTION.gap.default,             // mm: the site's Support gap (PROP.gap)
+  sideClearance: OPTION.sideClearance.default,
+  bottomGap: OPTION.bottomGap.default,
   padStyle: OPTION.padStyle.default,   // one of PAD_STYLES
   cutout: OPTION.cutout.default,       // one of web/cutout.js CUTOUT_PATTERNS
   tineDir: OPTION.tineDir.default,     // 'horizontal' (FDM) | 'vertical' (resin pins, #309)
@@ -178,6 +180,7 @@ export function computeFins(positions, options = {}) {
                         ...Object.fromEntries(Object.entries(opts.sway).filter(([, v]) => v != null)) }
                     : undefined,
     tunables,
+    turning: opts.turning ? { ...opts.turning, layerOffset: result.offset.z - shift.z } : null, // internal; no public control
   });
   // buildFins does not re-analyse the mesh. Its automatic exclusion mask moves
   // only exempt ceilings to amber, without changing the original analysis.
@@ -204,6 +207,7 @@ export function computeFins(positions, options = {}) {
     overFaces: Int32Array.from(overFaces),
     smallFaces: Int32Array.from(smallFaces),
     stats: {
+      ...(built.turning ?? {}),
       overhangRegions: result.regions.length,
       // The soup is fins | sway braces | pad, in these counts.
       finTriangles: fin.length / 9 - swayTris,

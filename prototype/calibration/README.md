@@ -32,7 +32,11 @@ PrusaSlicer's command line for the time and filament the menu shows
 engine moves on. The .3mf has the part and supports as TWO objects in register, as the
 site's Export > 3MF writes them since #199 (the slicer keeps them apart, so a tine only
 touches the part); never Arrange them apart. Files printed before that were one object;
-`separate.py` converted gap, grip, pad, span and lip in place on 2026-10-07 with their
+The site's writer moves supports a slicer would refuse as an object of their own (a
+first layer in mid-air, or empty layers between their walls: Orca, Bambu, GitHub #476)
+into the part's object as a part named `<name> supports on part`. bore/ is the one
+coupon that has them (every wall stands in its hole): its .3mf was rewritten that way
+on 2026-11-17, meshes unchanged. `separate.py` converted gap, grip, pad, span and lip in place on 2026-10-07 with their
 meshes unchanged (slender, foot, orient keep the one-object form they were printed in;
 tine/ has its own split). Record each print's result below, with the date and the
 setting it decided; the number itself goes in `web/prop/config.js` with a pointer here.
@@ -171,8 +175,16 @@ whose shelf printed flat.
   hugs the bar, which already holds the shelf's root); 75 % -> 9.0 / 18.7 / 28.4
   (9.7); 100 % -> 8.0 / 14.8 / 21.6 / 28.4 (6.8). So the default 50 % leaves a wider
   span than 0 %. The coupon prints what the site makes, so it will show it.
-  Cause and proposed fix: local issue 024. Until then CALIBRATION.md asks users to
-  report flat / sagged per shelf, not to set the dial from it.
+  (Superseded by the 2026-11-09 re-run below; CALIBRATION.md asked users only to
+  report flat / sagged per shelf while this stood.)
+- **Re-run 2026-11-09 on main: a fresh build is monotonic, so the finding above is out of
+  date for the engine.** Walls now cross the slicer's bridge, so the rows run from the bar
+  to the free edge and are spaced along the shelf's 30 mm: widest gap between row centres
+  14.4 / 14.4 / 9.6 / 9.6 / 5.8 mm at Coverage 0 / 25 / 50 / 75 / 100 %. `build.js` printed
+  20.0 for the two sparse shelves until it stopped comparing rows with the edge wall that
+  runs the other way. `print/` was rebuilt on that layout the same day (it had carried
+  the 2026-10-07 build with the old rows), and CALIBRATION.md's Span section now gives
+  the three spacings and lets users set the dial from the lowest flat shelf.
 - **waiting on print.**
 
 ### angle/ -- what overhang does the printer manage unsupported? (the Overhang slider)

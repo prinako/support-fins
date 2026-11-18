@@ -5,7 +5,19 @@ any slicer. It's the answer for Bambu Studio, which has no plugin API: run the p
 through this, open the 3MFs in Bambu.
 
 Same engine as the site and every plugin (`plugins/shared/engine/computeFins`), and the
-same settings: the flags are generated from `plugins/shared/engine/options.json`.
+same settings: the flags are generated from `plugins/shared/engine/options.json`
+(every one, with its values and default: [docs/PLUGIN-CONFIG.md](../../docs/PLUGIN-CONFIG.md)).
+
+Part-supported FDM walls have independent clearances: `--gap` controls their top,
+`--side-clearance 0.35` the wide sides, and `--bottom-gap 0.2` the bottom (millimetres).
+These defaults preserve existing output. Bottom gap does not lift plate feet;
+resin keeps its welded bottom. There is no new material preset selection.
+
+Side clearance is 0.2 to 1 mm: a wall closer than 0.2 mm would fuse to the part.
+
+```
+support-fins shelf.3mf --preserve-project --side-clearance 0.35 --bottom-gap 0.2
+```
 
 ```
 support-fins part.stl                          # -> part-fins.3mf next to it (part + fins)
@@ -88,7 +100,8 @@ For an AI client (Claude Code, Claude Desktop), the same tool is an MCP server:
 
 Use `--preserve-project` on a Bambu Studio/MakerWorld project (or one saved by a
 Bambu-based slicer with the same layout: OrcaSlicer, QIDI Studio) to keep its original
-painted meshes, filament/printer/process settings, object positions and plates:
+painting, filament/printer/process settings, object positions and plates. Sequential
+objects with negative parts use baked replacement bodies as described below:
 
 ```sh
 support-fins project.3mf --preserve-project
@@ -111,6 +124,7 @@ supports object because the tines touch it; that is expected, and the plate stil
 prints. A project or plate that prints by object instead gets the fins as a part of each
 model (they would otherwise print after it), with a warning. Models needing no fins
 get nothing. Unselected and nonprintable objects remain in the output.
+
 `--list-objects` shows a plate summary followed by the original build-item
 numbers, names, resource IDs and plate IDs. `--list-plates` shows just the summary:
 each plate's ID, total object count and printable-object count, including empty
@@ -167,7 +181,8 @@ left/right tool assignments. Non-0.4 mm projects now use their saved diameter
 instead of the previous fixed 0.4 mm scaling; 0.4 mm output is unchanged.
 
 Native slicer supports are preserved, and the CLI reports when they remain
-enabled: both native supports and fins may print. `--disable-native-supports`
+enabled: both native supports and fins may print, and their toolpaths can conflict
+in the slicer. `--disable-native-supports`
 sets `enable_support` to false only on selected objects and their part overrides.
 The project-wide setting and unselected objects are retained.
 
@@ -175,24 +190,129 @@ The project-wide setting and unselected objects are retained.
 and referenced plate previews are discarded because they describe the old
 geometry. User-authored layer-change commands are retained. Original mesh files
 and other unchanged members retain their compressed ZIP bytes; only the necessary
-manifests/settings and new support resources are written.
+manifests/settings, new support resources and any baked replacement bodies are written.
 
 This mode preserves the existing pose, so it cannot be combined with `--rot` or
 `--fins-only`. The input is protected against path aliases, symbolic links and
 hard links. An existing output requires `--overwrite`; the completed project is
-published atomically, and a failed object does not leave a partial output.
+published atomically; an aborted run does not publish an incomplete archive.
 Without `--object` (including plate-only selections), a model this mode can't handle
-(variable layer heights, a negative part, a shared instance, no plate) is skipped with a warning and left as it
+(variable layer heights, an unsupported negative part, a shared instance, no plate) is skipped with a warning and left as it
 was; the rest get fins. If none of the selected objects can be processed, the
 command fails without writing output. A model named with `--object` must work,
 or nothing is written.
 
 The initial supported layout is a millimeter Bambu project with component
 assemblies referencing external mesh files and explicit plate assignments.
-Shared build instances, negative parts (which would also subtract from added
-fins), inline-only assemblies, ZIP64 archives and other slicer project formats
+Negative parts are supported when the object's effective project/plate print
+sequence is **print by layer**. Supports are calculated from the subtracted shape;
+the original editable bodies, cutters and painting remain in the project. Fins
+are separate objects on the same plate, so the original cutters do not cut them.
+Existing placement rules still apply: recognized small holes are left for bridging,
+while larger cutouts may receive fins. The saved print sequence is never changed.
+
+Subtraction must succeed completely. Missing/empty cutters, open bodies, unapplied
+cutters, or cutters removing the whole body make that object incompatible; no fins
+are generated from an uncut or partially cut fallback. Batch and plate-only runs
+leave such objects unchanged and can write a partial result for the others;
+explicit `--object` selections fail without publishing output.
+
+For **print by object**, the CLI bakes the cuts into replacement normal parts and
+attaches fins to that same build object. This keeps the saved build order, plate,
+placement and applicable object/part settings; it does not create another object
+that would print after the body. Active cutter references are removed only on
+processed objects that receive fins. Objects needing no fins retain their editable
+bodies and cutters. Keep the original project: baked cutters are no longer
+independently editable in the output. Ordinary objects without negatives keep
+their existing sequential behavior.
+
+Baking also clears stale per-part assembly-restore transforms and cut-editing
+records for converted objects. The current build pose and object-level assembly
+placement are retained; use the original project to restore or edit original parts.
+
+Surviving colour, seam and support painting and distinct filament-slot assignments
+are retained. **New cut surfaces inherit their owning part's material settings by
+default.** Sliced colours and interior material regions may differ from the original;
+every baked object warns that the sliced preview needs inspection and may require
+manual repainting or material correction. Fins attached as parts also retain the
+existing warning that their tines weld to the body.
+
+Sequential baking requires closed source meshes, fixed layer settings and normal
+and negative parts. Variable-layer profiles, layer setting ranges, unsupported
+modifiers or triangle attributes and ambiguous material assignments are rejected;
+`--layer-height` does not bypass these conversion limits. Automatic source-mesh
+repair is not performed. Bambu Studio/MakerWorld is the initial conversion target.
+Re-slice with collision checks enabled: conversion does not certify printer-head
+clearance or that the saved layout is safe for sequential printing.
+
+For these objects, `--check` performs full conversion and replacement-mesh
+serialization as well as analysis. It can therefore take longer than a listing
+or a support-only compatibility check. It generates no fins, output project or
+checkpoints. Its compatible result does not certify sliced material regions,
+removability, collision clearance or sequential print order.
+
+Shared build instances, inline-only assemblies, ZIP64 archives and other slicer project formats
 are refused with an explanation (in the every-object default, a model with one is skipped). Direct output from this mode is refused as
 input to avoid adding fins twice. Individually editable fins are not included.
+
+### Optional turning fins
+
+`--turn-fins` replaces eligible upper straight walls with gradual turns ending in
+one top strip, while retaining their lower attachments. The shared engine sweeps
+its normal wall profile, foot and top interface through the turn; retained lower
+tines keep their original contact coordinates. It is **off by default**;
+`--no-turn-fins` explicitly keeps ordinary output. The source bodies, negative
+parts, painting, filament assignments, placement and saved settings stay unchanged.
+
+```sh
+support-fins project.3mf --preserve-project --turn-fins
+support-fins project.3mf --preserve-project --turn-fins --turn-angle 90
+```
+
+Automatic direction crosses an explicit bridge angle saved for the source
+object. With automatic bridge direction, it uses the shared engine's geometric
+anchor rule: bridge between opposite supports, otherwise the longer free run.
+Near-square roofs without an explicit direction and already aligned fins stay
+unchanged. Conflicting per-part bridge angles retain straight fins. `--turn-angle`
+overrides the top direction in plate XY: 0 is along X, 90 along Y; angles from 0
+through 180 are accepted, with 180 equivalent to 0. It requires `--turn-fins`.
+This geometry-based choice does not predict all bridge, perimeter or infill paths.
+Improving bridge-infill support can leave other perimeter spans less supported.
+Inspect all sliced roof paths and choose an override or retain straight fins
+when needed.
+
+The initial planner handles fixed-layer FDM print-by-layer projects with closed
+source geometry, a straight upper wall and enough height for the turn. It requires
+explicit saved nozzle, first/subsequent layer heights, ordinary extrusion widths
+and positive lateral clearance. Automatic widths, rafts, variable layers, resin,
+sequential printing and conflicting nozzle/layer overrides are unsupported when
+turning is enabled. These turning restrictions produce a warning and ordinary
+straight fins, including explicit object selections. Ordinary source/generation
+errors still follow the usual project selection rules. The feature does not change the printer settings to fit a turn.
+
+The turn must fit beneath the roof, clear the source and other printable plate
+objects and neighboring generated supports, preserve existing side contacts and
+avoid excluded overhang columns. Previously accepted turns reserve their bounding
+envelopes conservatively; a close pair can therefore remain straight. Neighbor
+analysis is serial and may add processing time on crowded plates. Each neighbor's
+unchanged fins are computed once per plate and released when that plate finishes.
+Growth is bounded geometrically to 45 degrees per layer. Unsupported roofs,
+insufficient clearance or an unprovable attachment retain the original fin with
+an explanation. The initial roof reach bound is 6 mm; it is a conservative scope
+limit, not a material-specific guarantee against sagging. Turning does not add
+foundations or fix pre-existing floating lower starts. Native supports are left
+as saved unless `--disable-native-supports` is supplied.
+
+Project statistics include `turnedFins`, `turningSkipped`, `turningReasons` and
+`turningDetails` (piece, direction and layer span). Original fin/tine counts retain
+their meanings; triangle counts reflect replacements. Resume stores completed
+turns and restores the same warnings. Changing activation, angle, input, settings
+or runtime invalidates reuse without changing the checkpoint format. `--check`
+validates source/settings compatibility only; eligibility, connections and final
+printability require generation and slicing. Listings do not generate turns.
+
+Always inspect the output in the slicer. A successful geometric check does not
+establish adhesion, removal ease or roof quality for a new model/material.
 
 ### Resume an interrupted project run
 
@@ -205,8 +325,12 @@ support-fins project.3mf --preserve-project --resume --cache-dir /path/to/cache 
 ```
 
 `--resume` saves each successfully processed object's fin geometry, including objects
-that need no fins. Restarting reuses completed objects; the interrupted object starts
-over. The source project is untouched, and output is written only after processing.
+that need no fins. For baked sequential objects, a versioned, checksummed record
+also saves complete replacement meshes at double precision, painting, material
+settings, source mappings and warnings. Reuse bypasses subtraction, paint remapping
+and fin generation; failed conversions are never checkpointed. Restarting reuses
+completed objects; the interrupted object starts over. The source project is
+untouched, and output is written only after processing.
 Default-mode skipped objects are still reported and left unchanged; they are never
 marked complete in the cache. Explicitly selected objects still must all succeed.
 
@@ -223,6 +347,10 @@ upgrades can also invalidate checkpoints. Changing only the output filename, log
 or `--overwrite` does not invalidate them. A damaged checkpoint is reported and its
 object recomputed. A checkpoint-write failure stops that file's processing, retaining
 earlier checkpoints rather than continuing without recovery.
+
+For negative-bearing objects, only results from successful complete subtraction
+are checkpointed. Reusing a compatible checkpoint skips both subtraction and fin
+generation; an incompatible object's failed subtraction is retried on the next run.
 
 Completed checkpoints for the run are removed only after the output is successfully
 written. An interrupted run or output failure retains them. Incompatible runs and
@@ -244,9 +372,12 @@ support-fins project.3mf --preserve-project --check --layer-height 0.2 --fin-ext
 `--check` inspects all printable objects, or the objects selected with `--plate`
 and `--object`.
 It checks project settings and loads referenced meshes one object at a time using
-the same reader as generation. It reports the first blocking reason for each
+the same reader as generation. For eligible negative-bearing objects it also
+performs the same complete subtraction validation, which can take substantial
+time and memory on large meshes. It reports the first blocking reason for each
 incompatible object and continues checking the rest, even with explicit selections.
-Native-support and print-by-object warnings are informational. Nonprintable and
+Native-support and ordinary print-by-object warnings are informational; negative
+parts with print-by-object are incompatible. Nonprintable and
 unselected objects are excluded from the report; `--list-objects` still lists all
 build items (within any `--plate` filter) without checking compatibility.
 
@@ -263,7 +394,7 @@ with `--list-objects`, `--list-plates`, `--output` or `--overwrite`; the existin
 restrictions on `--rot` and `--fins-only` also apply.
 
 A compatible result means the current project settings and reader accepted the
-object. It does **not** guarantee that generation, output writing, slicing or
+object, including subtraction when applicable. It does **not** guarantee that generation, output writing, slicing or
 printing will succeed, or that all overhangs can receive fins. Checks do not repair
 meshes. A problem in a shared manifest can affect several objects. Running a check
 is optional; normal generation keeps its existing checks without an additional
@@ -332,7 +463,65 @@ messages are descriptive text; use status values and counts for automation.
   archive members and manifests, and `project-io.js` protects atomic output.
 - `project-report.js` — selected-object outcomes, counts and terminal formatting.
 - `project-cache.js` — optional checksummed per-object checkpoints for project mode.
+- `project-analysis.js` — per-object mesh loading and strict negative-part subtraction for preserved projects.
+- `project-bake-input.js` — internal archive-to-conversion boundary. Resolves saved
+  filament/role assignments and fixed layer heights, checks compatibility, and
+  binds results to source/settings/runtime fingerprints. Rejects variable-layer
+  profiles, layer setting ranges, unsupported modifiers and shared build instances.
+  It loads one selected dependency tree and does not retain decoded source meshes
+  in its result. It writes no project or checkpoint.
+- `project-bake.js` — internal negative-part conversion, with Bambu paint-region
+  remapping in `project-paint.js` / `bambu-paint.js`. Export parts retain material
+  identities, support/seam annotations and source-face mappings. Paint subdivision
+  is separate from the unchanged geometry used for support analysis. New cut
+  surfaces inherit their owning part's existing material settings by default;
+  the result includes an object warning about possible sliced-material changes
+  and manual corrections. `project-sequential.js` plans the production replacement
+  resources and manifest edits. `tests/_bake-export.js` also exercises body-only
+  export independently of fin generation.
 - `tests/cli.test.js` — `deno test -A plugins/cli/tests/`. Runs in memory: CLI fins equal
   `computeFins` on the posed part, and match the website's own path on lbracket@35.
 - The summary line is `plugins/shared/engine/report.js`, word for word with the Python
   hosts' `host_report`.
+
+The internal conversion regressions run with:
+
+```sh
+deno test -A plugins/cli/tests/paint.test.js plugins/cli/tests/project-bake.test.js plugins/cli/tests/project-bake-input.test.js
+```
+
+These procedural fixtures check actual painted areas across cuts and mirrored or
+rotated transforms, recursive and extended paint codes, distinct material slots,
+inheritance, disappearing components, invalid data, and export/reimport. Unknown
+triangle attributes (including fuzzy-skin painting) and interpolated per-corner
+core materials are rejected by conversion. No nearest-face or majority-color
+fallback is used. Input meshes are not repaired. Exact zero-area faces in the
+boolean's float32 export are omitted; when they represent a split edge, adjacent
+faces use the same existing, exactly collinear vertices. No surface is filled and
+no vertex is moved. The remaining indexed surface must pass closed-mesh validation;
+analysis positions are retained verbatim. Software tests do not establish physical
+print behavior.
+
+Converted bodies and cutters must be closed manifold meshes. Open boundaries or
+non-manifold topology that prevent complete subtraction are rejected, without
+returning a partial conversion. Repair these source meshes externally, check that
+their painting and material assignments survived, and save a new 3MF before
+retrying. Automatic repair of painted source meshes is outside this service's
+scope; the material warning below does not permit invalid geometry.
+
+The default internal conversion preserves surviving exterior painting and part
+assignments, and leaves new cut surfaces unpainted so they inherit the owning
+part's existing material and wall/infill settings. It does not reconstruct the
+original sliced interior material regions or flatten an object to one filament.
+No opt-in flag is required. Callers must display the returned warning for every
+successfully converted object: sliced colors and material regions may differ,
+and the user should inspect the preview and manually correct painting or material
+assignments if needed. Bambu can extend retained painting onto new surfaces, so
+base-material inheritance is not a promise about the final sliced color.
+
+Geometry, surviving paint, material identities, settings and placement remain
+validation requirements. Incomplete subtraction, invalid geometry, unsupported
+attributes and ambiguous assignments still fail. Native material-region
+comparisons are diagnostic for this policy; they must not be presented as exact
+preservation passes. Sequential project generation presents these warnings on
+both fresh and resumed conversions.

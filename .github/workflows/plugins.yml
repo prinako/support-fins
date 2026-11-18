@@ -8,10 +8,8 @@ name: plugins
 #   PR:            build + test
 #   push to main:  build + test, then publish the builds to the rolling
 #                  `plugins-latest` pre-release (printfins.com's Plugins menu links here)
-#   GitHub Release: build + test, then attach plugin builds and publish the
-#                   versioned Docker image. Stable releases also move `latest`.
-#   called / dispatched with a `tag`: the same as a GitHub Release for that tag (release.yml
-#                   creates one on each release run and calls this for it).
+#   GitHub Release: build + test, then attach plugin builds. Container images
+#                   are published by the dedicated container workflow.
 #
 # The Fusion add-in runs the engine in Fusion's own browser (a hidden palette), so
 # its zip has nothing native in it and serves Windows and macOS alike. It has been
